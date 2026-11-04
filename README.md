@@ -1,0 +1,252 @@
+# Conversation API
+
+**A multi-turn conversation API where the model is a config value, not a code dependency.**
+One HTTP contract in front of **Amazon Bedrock, Anthropic, OpenAI, Azure OpenAI, Gemini (API or Vertex AI)
+and Ollama**. You can swap the model **for one turn, for one conversation, or for every caller at once**,
+and the conversation history carries over. It is built to be called from **AWS CloudShell, Azure Cloud Shell
+or Google Cloud Shell** with nothing more than `curl`.
+
+> © 2026 Tanmay Roy · Proprietary, view-only (see [LICENSE](LICENSE)).
+
+<sub>Illustrative session:</sub>
+
+```text
+$ convo ask "Summarise the CAP theorem in two lines" -m smart
+Consistency, availability and partition tolerance: when the network partitions, a distributed system
+must give up either consistency or availability...
+— claude-sonnet (bedrock:global.anthropic.claude-sonnet-5-5) · 31→58 tok · 1.4s
+conversation: conv_3f9c…   (continue: convo say conv_3f9c… "...")
+
+$ convo swap conv_3f9c… azure-gpt          # same conversation, different vendor
+$ convo say conv_3f9c… "Now give a real-world example"
+— azure-gpt (azure_openai:gpt-4o-mini) · 104→77 tok · 0.9s
+```
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Shell["Cloud shell (AWS / Azure / GCP)"]
+    C1["convo CLI<br/>(streaming REPL)"]
+    C2["scripts/convo.sh<br/>(curl only)"]
+  end
+  C1 & C2 -->|"HTTPS · X-API-Key<br/>JSON or SSE"| API
+
+  subgraph Svc["Conversation API (FastAPI)"]
+    API["/v1/chat · /v1/conversations<br/>/v1/models · /healthz"] --> S[ConversationService<br/>per-conversation lock<br/>atomic turns]
+    S --> R[ModelRegistry<br/>config/models.yaml<br/>aliases · fallbacks · prices]
+    S --> T[History fitter<br/>context budget per model]
+    S --> ST[(Store<br/>memory · SQLite)]
+    S --> P{{Provider contract<br/>complete · stream}}
+  end
+
+  P --> B[Bedrock Converse<br/>Claude · Nova · Llama]
+  P --> A[Anthropic API]
+  P --> O[OpenAI]
+  P --> AZ[Azure OpenAI<br/>key or Entra ID]
+  P --> G[Gemini API / Vertex AI]
+  P --> L[Ollama / vLLM<br/>OpenAI-compatible]
+  P --> M[mock<br/>offline, deterministic]
+```
+
+### Three ways to swap a model
+
+| Scope | How | Typical use |
+|---|---|---|
+| **One turn** | `"model": "fast"` on `POST /v1/conversations/{id}/messages` | a cheap model for a quick follow-up |
+| **One conversation** | `PATCH /v1/conversations/{id} {"model": "gpt"}` (or `/model gpt` in the REPL) | user switches model; history is kept and the swap is logged in `model_history` |
+| **Every caller** | re-point an alias in [`config/models.yaml`](config/models.yaml) (`smart: claude-sonnet` → `smart: gemini-vertex`) | vendor migration, cost change, outage, A/B; clients never change |
+
+Names resolve as **alias → catalog entry → ad-hoc `provider:model-id`** (for example
+`bedrock:us.meta.llama3-3-70b-instruct-v1:0`; can be turned off with `CONVO_ALLOW_ADHOC_MODELS=false`).
+
+---
+
+## Run it in a cloud shell (about 60 seconds)
+
+```bash
+git clone https://github.com/jacobian645-collab/conversation-api.git && cd conversation-api
+./scripts/cloudshell_quickstart.sh
+```
+
+The script detects which cloud shell it is in, finds or installs Python 3.10+ (AWS CloudShell ships 3.9,
+so it installs 3.11), installs only that cloud's SDK, starts the server in the background on
+`127.0.0.1:8080`, runs a smoke test on the offline model, and prints the next commands for that cloud.
+
+| Cloud shell | Credentials already there | First real call |
+|---|---|---|
+| **AWS CloudShell** | IAM role of your console session | `convo ask "hi" -m smart` (Claude Sonnet on Bedrock) |
+| **Azure Cloud Shell** | your `az login` (Entra ID), no key needed | `export AZURE_OPENAI_ENDPOINT=… AZURE_OPENAI_DEPLOYMENT=…` then `convo ask "hi" -m azure-gpt` |
+| **Google Cloud Shell** | Application Default Credentials + project | `convo ask "hi" -m gemini-vertex` (Web Preview on 8080 opens `/docs`) |
+
+```bash
+source .venv/bin/activate && export CONVO_URL=http://127.0.0.1:8080
+convo models                         # every model, and whether it is configured here
+convo chat -m fast                   # interactive; /model <name> swaps mid-chat, /once <name> for one turn
+./scripts/convo.sh ask "hi" smart    # no Python client needed: curl + python3 for JSON escaping
+./scripts/cloudshell_quickstart.sh stop
+```
+
+### Call a deployed instance from a cloud shell
+
+| Target | Deploy | Call from the shell |
+|---|---|---|
+| **Cloud Run** (private) | [`deploy/gcp_cloud_run.sh`](deploy/gcp_cloud_run.sh): dedicated service account with `aiplatform.user`, API key in Secret Manager, `--no-allow-unauthenticated` | `CONVO_BEARER_TOKEN=$(gcloud auth print-identity-token)` + `CONVO_API_KEY` |
+| **Azure Container Apps** | [`deploy/azure_container_apps.sh`](deploy/azure_container_apps.sh): built in ACR from source, managed identity with *Cognitive Services OpenAI User*, API key as a Container Apps secret | `CONVO_URL=https://<fqdn>` + `CONVO_API_KEY` |
+| **AWS** | the same [Dockerfile](Dockerfile) runs on ECS Fargate; give the task role `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` | `CONVO_URL` + `CONVO_API_KEY` |
+
+The CLI sends the app key as `X-API-Key` and the platform token as `Authorization: Bearer`, so a
+platform IAM layer and the app key can both be in place at once.
+
+---
+
+## API
+
+| Method & path | Body | Returns |
+|---|---|---|
+| `POST /v1/chat` | `{content, conversation_id?, model?, system?, stream?, max_tokens?, temperature?}` | turn; omit `conversation_id` to start, pass it back to continue. `model` here is **sticky** (swaps the conversation) |
+| `POST /v1/conversations` | `{model?, system?, metadata?}` | `201` conversation |
+| `GET /v1/conversations?limit=20` | | recent conversations (summaries) |
+| `GET /v1/conversations/{id}` | | full history, with the model that wrote each reply, and `model_history` |
+| `PATCH /v1/conversations/{id}` | `{model?, system?}` | swap model / change system prompt; history kept |
+| `DELETE /v1/conversations/{id}` | | `204` |
+| `POST /v1/conversations/{id}/messages` | `{content, model?, stream?, max_tokens?, temperature?}` | turn; `model` here applies to **this turn only** |
+| `GET /v1/models` | | catalog with provider, model ID, aliases, fallbacks, and a local readiness check |
+| `GET /healthz` | | liveness, default model, store (no auth, for probes) |
+
+A **turn** response:
+
+```json
+{
+  "conversation_id": "conv_3f9c…",
+  "message": {"role": "assistant", "content": "…", "model": {"name": "claude-haiku", "provider": "bedrock", "model_id": "global.anthropic.claude-haiku-5-5"}},
+  "model_requested": "smart",
+  "model_used": {"name": "claude-haiku", "provider": "bedrock", "model_id": "global.anthropic.claude-haiku-5-5"},
+  "fell_back": true,
+  "attempts": [{"model": "claude-sonnet", "provider": "bedrock", "kind": "retryable", "error": "bedrock ThrottlingException: …"}],
+  "usage": {"input_tokens": 412, "output_tokens": 96, "cost_usd": null},
+  "latency_ms": 1830,
+  "history_trimmed": 0
+}
+```
+
+**Streaming** (`"stream": true`) is Server-Sent Events: `start` → `delta`… → `done` (the full turn object
+above). Before the first token you may see `fallback {from, to, error}`; on failure, `error {error, kind,
+partial, attempts}`.
+
+```bash
+curl -N -X POST $CONVO_URL/v1/chat -H "X-API-Key: $CONVO_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"content": "Explain SSE in one paragraph", "model": "fast", "stream": true}'
+```
+
+**Errors** always look like `{"error": {"code", "message", …}}`: `unknown_model` (400, lists `available`),
+`invalid_request` (400, the provider rejected the request), `conversation_not_found` (404),
+`message_too_long` (413), `unauthorized` (401), `all_models_failed` (502, lists every attempt).
+
+---
+
+## Design decisions
+
+**Provider-neutral history is what makes swapping safe.** Messages are stored as plain `{role, content}`
+and translated per provider at call time (Bedrock `content` blocks, Gemini's `model` role, OpenAI's system
+message, Anthropic's top-level `system`). Nothing in the stored conversation belongs to one vendor.
+([ADR-0001](docs/adr/0001-provider-contract-and-model-catalog.md))
+
+**Turns are atomic.** The user message and the reply are saved together, only after a model answers. A
+failed, rejected or abandoned turn leaves the conversation as it was, so history always alternates
+user/assistant (Bedrock and Anthropic reject anything else). Turns on one conversation are serialised by a
+per-conversation lock. ([ADR-0002](docs/adr/0002-conversation-state.md))
+
+**Fallback is policy, driven by error class.** Every provider error is classified as `retryable`
+(throttled, 5xx, timeout), `unavailable` (no SDK, credentials, access or model) or `invalid_request`. The
+first two move down the model's `fallbacks` list; the last stops, because another model will not fix a bad
+request. Streaming falls back only **before the first token**: once text has reached the client, a silent
+restart on another model would splice two answers together. ([ADR-0003](docs/adr/0003-fallback-policy.md))
+
+**Each model gets a history budget.** `context_tokens − max_tokens` bounds what is sent; the oldest turns
+are dropped first, the newest message is always kept, and the window always starts on a user turn.
+Storage keeps everything, so moving to a larger-context model restores full history. The response reports
+`history_trimmed`.
+
+**One adapter per API shape, not per model.** Bedrock's Converse API covers Claude, Nova, Llama and Mistral
+with one request shape; one OpenAI-compatible adapter serves OpenAI, Azure OpenAI and Ollama/vLLM. Adding a
+provider is one class and one line in `providers/__init__.py`. SDKs are optional extras and imported lazily,
+so a missing SDK disables only its own models (and `/v1/models` says so).
+
+**Keyless where the cloud allows it.** Bedrock uses the AWS credential chain, Azure OpenAI falls back to
+`DefaultAzureCredential` when no key is set (az login, managed identity), and Vertex AI uses Application
+Default Credentials. The deploy scripts keep the app's own API key in Secret Manager / Container Apps secrets.
+
+---
+
+## Configuration
+
+Settings come from environment variables (or `.env`, see [.env.example](.env.example)). Provider
+credentials use each SDK's standard variables.
+
+| Variable | Default | |
+|---|---|---|
+| `CONVO_API_KEY` | unset | when set, required on every `/v1` call (`X-API-Key` or `Authorization: Bearer`) |
+| `CONVO_DEFAULT_MODEL` | `mock` | catalog name or alias used when a request names none |
+| `CONVO_HOST` / `CONVO_PORT` | `127.0.0.1` / `8080` | `PORT` is honoured for Cloud Run and Container Apps |
+| `CONVO_STORE` | `memory` | `sqlite` keeps conversations across restarts (`CONVO_SQLITE_PATH`) |
+| `CONVO_ALLOW_ADHOC_MODELS` | `true` | allow `provider:model-id` names outside the catalog |
+| `CONVO_MODELS_FILE` | `config/models.yaml` | the catalog |
+| `CONVO_REQUEST_TIMEOUT_S` | `120` | per model attempt |
+
+The catalog supports `${VAR}` and `${VAR:-default}`, so model IDs can be set per environment without
+editing the file (`BEDROCK_SONNET_ID`, `AZURE_OPENAI_DEPLOYMENT`, `GEMINI_MODEL`, …). It is validated at
+startup: unknown providers, aliases pointing nowhere, missing fallbacks and a bad default all fail fast.
+
+> Model IDs change and differ by region and account. The catalog's defaults are a starting point; check
+> what your account can call (`convo models` shows readiness, not entitlement).
+
+---
+
+## Develop and test
+
+```bash
+make install     # pip install -e ".[dev]"
+make lint        # ruff + mypy
+make test        # 53 offline tests, no cloud credentials needed
+make run         # API on 127.0.0.1:8080
+```
+
+The suite runs with no network or credentials. It covers model resolution and catalog validation; swapping
+mid-conversation (the next model receives the earlier model's turns); per-turn overrides; fallback on
+retryable and unavailable errors and no fallback on invalid requests; atomic turns; history trimming;
+streaming fallback before the first token and discarding a stream that fails after it; serialised
+concurrent turns; auth; the SQLite store across restarts; and each provider adapter's request mapping,
+response parsing and error classification against fake SDK clients. CI runs it on Python 3.10 and 3.12 and
+then drives the CLI and the curl client against a live server.
+
+## Layout
+
+```text
+config/models.yaml              model catalog: providers, aliases, fallbacks, prices
+src/conversation_api/
+  app.py                        FastAPI routes, SSE, auth, structured errors, JSON logs
+  service.py                    turns, swap, fallback, history fitting, per-conversation locks
+  registry.py                   catalog loading, env interpolation, validation, name resolution
+  store.py                      memory (LRU) and SQLite stores behind one interface
+  providers/                    base contract + bedrock, anthropic, openai_compat, gemini, mock
+  cli.py                        `convo`: serve, models, ask, say, swap, chat, history, list, rm
+scripts/cloudshell_quickstart.sh  detect cloud shell → install → run → smoke test
+scripts/convo.sh                curl-only client
+deploy/                         Cloud Run and Azure Container Apps
+docs/adr/                       design records
+```
+
+## Limits and next steps
+
+- **State is per process.** The memory store is per instance and SQLite is per volume. For several
+  replicas, implement the `ConversationStore` protocol on DynamoDB, Cosmos DB, Firestore or Redis and add an
+  optimistic version check on write. ([ADR-0002](docs/adr/0002-conversation-state.md))
+- **Token counts for trimming are estimates** (about 4 characters per token). Provider token counters could
+  replace the estimate where exact budgeting matters.
+- **Text only.** Tool use, images and structured output would extend `ChatMessage` with typed content
+  blocks; the adapter boundary is already where that translation belongs.
+- **No per-key quotas yet.** Usage and cost are returned per turn and logged as JSON; a rate limiter per API
+  key would sit in the same dependency as auth.

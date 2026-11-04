@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "conversation-api"
+version = "0.1.0"
+description = "Multi-turn conversation API with hot-swappable models (Amazon Bedrock, Anthropic, OpenAI, Azure OpenAI, Gemini/Vertex, Ollama), SSE streaming, provider fallback, and a CLI built to be called from AWS CloudShell, Azure Cloud Shell or Google Cloud Shell."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "LicenseRef-Proprietary-View-Only" }
+classifiers = ["License :: Other/Proprietary License", "Private :: Do Not Upload"]
+authors = [{ name = "Tanmay Roy" }]
+keywords = ["llm", "conversation-api", "model-routing", "fastapi", "sse", "bedrock", "azure-openai", "vertex-ai", "cloud-shell"]
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.4",
+  "pyyaml>=6.0",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+bedrock = ["boto3>=1.35"]
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.50"]
+azure = ["openai>=1.50", "azure-identity>=1.17"]
+gemini = ["google-genai>=1.0"]
+all = ["conversation-api[bedrock,anthropic,openai,azure,gemini]"]
+dev = [
+  "conversation-api[all]",
+  "pytest>=8", "pytest-asyncio>=0.24",
+  "ruff>=0.6", "mypy>=1.11", "types-PyYAML",
+]
+
+[project.scripts]
+convo = "conversation_api.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/conversation_api"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config/models.yaml" = "conversation_api/models.yaml"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC"]
+ignore = ["RUF012", "E501", "B008"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+check_untyped_defs = true
+plugins = ["pydantic.mypy"]

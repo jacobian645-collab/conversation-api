@@ -1,0 +1,74 @@
+Conversation API — Proprietary View-Only License
+
+Copyright (c) 2026 Tanmay Roy. All rights reserved.
+
+This repository, including all source code, documentation, diagrams, architecture
+decision records, prompts, configuration and other materials (together, the
+"Software"), is the exclusive property of Tanmay Roy (the "Author"). It is made
+publicly visible for reference and portfolio-review purposes only. It is NOT open
+source.
+
+1. PERMITTED USE
+
+   You may, free of charge:
+   (a) view and read the Software through the hosting platform on which the Author
+       has published it (for example, the GitHub web interface);
+   (b) study the Software to understand the ideas, patterns and architecture it
+       demonstrates, and discuss or describe it, including in reviews, interviews
+       and articles, provided you credit the Author and link to the original
+       repository; and
+   (c) quote short excerpts (no more than 20 consecutive lines of code or text)
+       solely for commentary, review or discussion, with attribution.
+
+2. PROHIBITED USE
+
+   Except as expressly permitted in Section 1, or with the Author's prior written
+   permission, you may not:
+   (a) copy, download for reuse, clone for reuse, or reproduce the Software, in
+       whole or in part;
+   (b) modify, adapt, translate, refactor or create derivative works based on the
+       Software;
+   (c) distribute, publish, sublicense, sell, lease, lend or otherwise make the
+       Software available to any third party, including by re-uploading it to
+       another repository or platform;
+   (d) use the Software, or any part of it, in any personal, academic, commercial
+       or production project, product or service;
+   (e) present the Software, or any substantial part of it, as your own work,
+       including in job applications, interviews, portfolios or coursework;
+   (f) remove, alter or obscure any copyright, attribution or license notice; or
+   (g) use the Software, in whole or in part, to train, fine-tune, evaluate or
+       benchmark any machine-learning or artificial-intelligence model, or include
+       it in any dataset.
+
+3. HOSTING-PLATFORM TERMS
+
+   Where the Software is hosted on a platform whose terms of service grant users
+   limited rights (for example, GitHub's right to view and "fork" a public
+   repository within GitHub), those rights apply only to the extent the platform's
+   terms require. Any such fork may not be modified, used, distributed or otherwise
+   exploited beyond what Section 1 permits.
+
+4. THIRD-PARTY COMPONENTS
+
+   Third-party libraries referenced by the Software (for example, in
+   pyproject.toml) are not included in this license and remain subject to their
+   own licenses. Model names and cloud services referenced in the Software belong
+   to their respective owners.
+
+5. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+   FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE
+   LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+6. TERMINATION
+
+   Any use of the Software outside the permissions in Section 1 automatically
+   terminates all rights granted to you under this license, without notice.
+
+7. PERMISSIONS
+
+   To request permission for any use not covered above, contact the Author via
+   https://github.com/jacobian645-collab.

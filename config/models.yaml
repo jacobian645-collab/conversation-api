@@ -1,0 +1,111 @@
+# Model catalog: the one place a model gets swapped.
+#
+# Clients ask for a NAME ("smart", "claude-sonnet", "gpt"). This file maps that name to a provider and a
+# provider-specific model ID. Point "smart" at a different model here and every client moves with it,
+# without a code change or a redeploy of the clients.
+#
+# Per entry:
+#   provider        mock | bedrock | anthropic | openai | azure_openai | gemini | ollama
+#   model           the provider's model ID (Azure: your *deployment* name)
+#   max_tokens      default output cap for a reply (a request can lower or raise it)
+#   context_tokens  history budget; oldest turns are trimmed to fit (system prompt is always kept)
+#   temperature     optional; omitted = provider default (some newer models reject it)
+#   fallbacks       names tried in order if this model is throttled, down, or not configured
+#   price_per_mtok  optional {input, output} USD per million tokens, used for the cost estimate
+#   anything else   provider options (region, base_url, api_version, vertexai, location, ...)
+#
+# ${VAR} and ${VAR:-default} are read from the environment when the file loads.
+# Model IDs change. Check the provider console for what your account and region can call.
+
+default: ${CONVO_DEFAULT_MODEL:-mock}
+
+models:
+  mock:
+    provider: mock
+    model: echo-v1
+    description: Deterministic offline model. No credentials, no cost. Use for demos and tests.
+    context_tokens: 4000
+
+  # ---- Amazon Bedrock (Converse API: one request shape for every Bedrock model family) -----------
+  claude-sonnet:
+    provider: bedrock
+    model: ${BEDROCK_SONNET_ID:-global.anthropic.claude-sonnet-5-5}
+    region: ${AWS_REGION:-us-east-1}
+    description: Claude Sonnet 5.5 on Bedrock (global cross-region inference profile)
+    max_tokens: 2048
+    context_tokens: 200000
+    fallbacks: [claude-haiku, nova-pro]
+
+  claude-haiku:
+    provider: bedrock
+    model: ${BEDROCK_HAIKU_ID:-global.anthropic.claude-haiku-5-5}
+    region: ${AWS_REGION:-us-east-1}
+    description: Claude Haiku 5.5 on Bedrock. Fast and cheap.
+    max_tokens: 1024
+    context_tokens: 200000
+    fallbacks: [nova-pro]
+
+  nova-pro:
+    provider: bedrock
+    model: ${BEDROCK_NOVA_ID:-us.amazon.nova-pro-v1:0}
+    region: ${AWS_REGION:-us-east-1}
+    description: Amazon Nova Pro on Bedrock. Same Converse adapter, different model family.
+    max_tokens: 1024
+    context_tokens: 300000
+
+  # ---- Anthropic API --------------------------------------------------------------------------
+  claude-direct:
+    provider: anthropic
+    model: claude-sonnet-5-5
+    description: Claude Sonnet 5.5 via the Anthropic API (ANTHROPIC_API_KEY)
+    max_tokens: 2048
+    context_tokens: 200000
+
+  # ---- OpenAI and Azure OpenAI ----------------------------------------------------------------
+  gpt:
+    provider: openai
+    model: ${OPENAI_MODEL:-gpt-4.1-mini}
+    description: OpenAI API (OPENAI_API_KEY)
+    max_tokens: 1024
+    context_tokens: 128000
+
+  azure-gpt:
+    provider: azure_openai
+    model: ${AZURE_OPENAI_DEPLOYMENT:-gpt-4o-mini}
+    api_version: ${AZURE_OPENAI_API_VERSION:-2024-10-21}
+    description: Azure OpenAI deployment. Uses AZURE_OPENAI_API_KEY, or your Entra ID login (az login) if no key.
+    max_tokens: 1024
+    context_tokens: 128000
+
+  # ---- Google Gemini --------------------------------------------------------------------------
+  gemini:
+    provider: gemini
+    model: ${GEMINI_MODEL:-gemini-2.5-flash}
+    description: Gemini via the Gemini API (GEMINI_API_KEY)
+    max_tokens: 1024
+    context_tokens: 1000000
+
+  gemini-vertex:
+    provider: gemini
+    model: ${GEMINI_MODEL:-gemini-2.5-flash}
+    vertexai: true
+    project: ${GOOGLE_CLOUD_PROJECT:-}
+    location: ${GOOGLE_CLOUD_LOCATION:-us-central1}
+    description: Gemini on Vertex AI using Application Default Credentials (works in Google Cloud Shell)
+    max_tokens: 1024
+    context_tokens: 1000000
+
+  # ---- Local / self-hosted (any OpenAI-compatible server: Ollama, vLLM, LM Studio) -------------
+  local-llama:
+    provider: ollama
+    model: ${OLLAMA_MODEL:-llama3.2}
+    base_url: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
+    description: Local model through Ollama's OpenAI-compatible endpoint
+    max_tokens: 1024
+    context_tokens: 8000
+
+# Stable names for clients. Re-point these to swap the model behind every caller at once.
+aliases:
+  smart: claude-sonnet
+  fast: claude-haiku
+  offline: mock
