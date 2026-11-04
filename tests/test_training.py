@@ -269,3 +269,47 @@ def test_cli_export_refuses_too_small_dataset(
     with pytest.raises(SystemExit):
         cli.main(["export", "--out", str(tmp_path / "x")])
     assert not (tmp_path / "x" / "train.jsonl").exists()
+
+
+# ---- reinforcement fine-tuning conversion -----------------------------------------------------------
+def test_sft_to_rft_makes_prompt_only_records_with_reference_answers() -> None:
+    from conversation_api.training import sft_to_rft, validate_rft_record
+
+    rec = nova_record("Be brief.", [("user", "q1"), ("assistant", "a1"), ("user", "q2"), ("assistant", "a2")])
+    out = sft_to_rft(rec, "s-1")
+    assert [r["id"] for r in out] == ["s-1-t1", "s-1-t2"]
+    assert out[0] == {
+        "id": "s-1-t1",
+        "reference_answer": "a1",
+        "messages": [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "q1"}],
+    }
+    assert [m["role"] for m in out[1]["messages"]] == ["system", "user", "assistant", "user"]
+    assert out[1]["reference_answer"] == "a2"
+    assert all(validate_rft_record(r) == [] for r in out)
+    single = sft_to_rft(nova_record(None, [("user", "q"), ("assistant", "a")]), "x")
+    assert single == [{"id": "x", "messages": [{"role": "user", "content": "q"}], "reference_answer": "a"}]
+
+
+def test_validate_rft_record_rejects_sft_shapes() -> None:
+    from conversation_api.training import validate_rft_record
+
+    sft = nova_record(None, [("user", "q"), ("assistant", "a")])
+    assert any("content must be a non-empty string" in e for e in validate_rft_record(sft))
+    assert "last message must be the user prompt (no assistant answer)" in validate_rft_record(
+        {"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}
+    )
+
+
+def test_cli_to_rft_and_shipped_rft_dataset(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from conversation_api.training import RFT_MIN_SAMPLES, validate_rft_record
+
+    src = Path(__file__).resolve().parents[1] / "examples" / "datasets" / "ai-ml-tutor"
+    cli.main(["to-rft", str(src / "train.jsonl"), str(tmp_path / "rft.jsonl"), "--id-prefix", "tutor-train"])
+    assert "120 RFT records" in capsys.readouterr().out
+    assert (tmp_path / "rft.jsonl").read_text() == (src / "rft" / "train.jsonl").read_text()
+    shipped = [json.loads(x) for x in (src / "rft" / "train.jsonl").read_text().splitlines()]
+    assert len(shipped) >= RFT_MIN_SAMPLES and all(validate_rft_record(r) == [] for r in shipped)
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text(json.dumps({"messages": [{"role": "assistant", "content": [{"text": "a"}]}]}) + "\n")
+    with pytest.raises(SystemExit):
+        cli.main(["to-rft", str(bad), str(tmp_path / "out.jsonl")])

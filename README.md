@@ -122,6 +122,9 @@ bash scripts/bedrock_finetune_nova.sh status convo-nova-<timestamp>
 
 A ready-made dataset to try the job with: [`examples/datasets/ai-ml-tutor`](examples/datasets/ai-ml-tutor)
 (112 samples of a concise AI/ML tutor, 101 train / 11 validation, including multi-turn).
+For **reinforcement fine-tuning** (a judge model or reward function scores the model's own answers), Bedrock
+expects prompt-only records in the OpenAI chat format with a `reference_answer`; convert with
+`convo to-rft train.jsonl rft-train.jsonl` (ready-made: `examples/datasets/ai-ml-tutor/rft/`).
 
 API: `GET /v1/training/report` and `GET /v1/training/export.jsonl?split=train|validation|all` take the same
 filters as query parameters (`where=dataset=support&validation_split=0.1`).
@@ -301,7 +304,7 @@ startup: unknown providers, aliases pointing nowhere, missing fallbacks and a ba
 ```bash
 make install     # pip install -e ".[dev]"
 make lint        # ruff + mypy
-make test        # 101 offline tests, no cloud credentials needed (Parameter Store is simulated with moto)
+make test        # 104 offline tests, no cloud credentials needed (Parameter Store is simulated with moto)
 make run         # API on 127.0.0.1:8080
 ```
 

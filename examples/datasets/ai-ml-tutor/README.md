@@ -7,6 +7,14 @@ Ready-to-use training data for fine-tuning Amazon Nova (Micro / Lite / Pro) on B
 |---|---|---|
 | `train.jsonl` | 101 | 18 |
 | `validation.jsonl` | 11 | 2 |
+| `rft/train.jsonl` | 120 | 19 with history |
+| `rft/validation.jsonl` | 13 | 2 with history |
+
+There are two formats. **Supervised fine-tuning** uses the files at the top level: full conversations in
+`bedrock-conversation-2024`. **Reinforcement fine-tuning** uses `rft/`: the OpenAI chat format with prompts
+only (each record ends on the user's question), the tutor's answer as `reference_answer` for the judge, and
+an `id`. Each follow-up turn of a multi-turn conversation becomes its own record, with the earlier turns as
+context. Make these files with `convo to-rft train.jsonl rft/train.jsonl`.
 
 - **Persona (system prompt):** a concise AI/ML tutor for engineers and product managers: accurate, plain
   language, one concrete example, under 150 words.

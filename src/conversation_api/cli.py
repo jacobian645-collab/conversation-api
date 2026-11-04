@@ -11,6 +11,7 @@ Fine-tuning data (Amazon Nova, bedrock-conversation-2024 JSONL):
   convo collect prompts.txt -m fast --dataset support    run prompts through a model, store the conversations
   convo export --where dataset=support --out data/nova   write train.jsonl + validation.jsonl, with checks
   convo validate-jsonl data/nova/train.jsonl --validation data/nova/validation.jsonl   offline check
+  convo to-rft data/nova/train.jsonl data/nova/rft-train.jsonl   prompts + reference answers for RFT
   convo chat -m fast                  interactive; type /help inside
 
 Environment: CONVO_URL (default http://127.0.0.1:8080), CONVO_API_KEY, and CONVO_BEARER_TOKEN for a
@@ -442,6 +443,33 @@ def cmd_collect(client: Client, args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_to_rft(args: argparse.Namespace) -> None:
+    """Convert Nova SFT JSONL (bedrock-conversation-2024) to reinforcement fine-tuning JSONL."""
+    import pathlib
+
+    from .training import RFT_MIN_SAMPLES, sft_to_rft, validate_record, validate_rft_record
+
+    src = pathlib.Path(args.input)
+    prefix = args.id_prefix or src.stem
+    records: list[dict[str, Any]] = []
+    for n, line in enumerate(src.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        if errs := validate_record(rec):
+            raise ApiError(f"{src} line {n} is not valid Nova SFT data: {errs[0]}")
+        records += sft_to_rft(rec, f"{prefix}-{n:04d}")
+    problems = [f"{r['id']}: {e}" for r in records for e in validate_rft_record(r)]
+    if problems:
+        raise ApiError("conversion produced invalid records: " + "; ".join(problems[:5]))
+    out = pathlib.Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records), encoding="utf-8")
+    print(f"wrote {out}: {len(records)} RFT records from {src}")
+    if args.training and len(records) < RFT_MIN_SAMPLES:
+        print(_c(YELLOW, f"  warning: Bedrock RFT needs at least {RFT_MIN_SAMPLES} training records"))
+
+
 def cmd_serve(args: argparse.Namespace) -> None:
     from .app import run
 
@@ -533,6 +561,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("files", nargs="+", help="training files (also checked for the 8..20,000 sample limits)")
     s.add_argument("--validation", action="append", help="validation file (format rules only; repeatable)")
 
+    s = sub.add_parser("to-rft", help="convert Nova SFT JSONL to reinforcement fine-tuning JSONL (offline)")
+    s.add_argument("input")
+    s.add_argument("output")
+    s.add_argument("--id-prefix", help="record id prefix (default: input file name)")
+    s.add_argument(
+        "--validation",
+        dest="training",
+        action="store_false",
+        help="this is a validation file (skip the 100-record minimum check)",
+    )
+
     s = sub.add_parser("chat", help="interactive chat")
     s.add_argument("-m", "--model")
     s.add_argument("-s", "--system")
@@ -545,8 +584,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "serve":
         cmd_serve(args)
         return
-    if args.command == "validate-jsonl":
-        cmd_validate_jsonl(args)
+    if args.command in ("validate-jsonl", "to-rft"):
+        try:
+            (cmd_validate_jsonl if args.command == "validate-jsonl" else cmd_to_rft)(args)
+        except ApiError as exc:
+            print(_c(RED, f"error: {exc}"), file=sys.stderr)
+            sys.exit(1)
         return
     client = Client(args.url, args.api_key, args.bearer)
     handlers = {

@@ -347,3 +347,54 @@ def validate_jsonl(
     elif valid > MAX_SAMPLES:
         problems.append(f"{valid} samples; Nova accepts at most {MAX_SAMPLES}")
     return valid, problems
+
+
+# ---- reinforcement fine-tuning (RFT) ------------------------------------------------------------------
+# Bedrock reinforcement fine-tuning for Nova uses the OpenAI chat-completion format with prompts only: the
+# model writes its own answer during training and a reward function (or judge model) scores it, optionally
+# against `reference_answer`. Extra top-level fields (such as id) are passed to the reward function.
+RFT_MIN_SAMPLES = 100
+
+
+def sft_to_rft(rec: dict[str, Any], record_id: str) -> list[dict[str, Any]]:
+    """One RFT record per assistant turn: system + history + that user turn, with the assistant's text as the
+    reference answer. A 2-turn SFT conversation therefore gives 2 RFT records."""
+    system = " ".join(b.get("text", "") for b in rec.get("system") or []).strip()
+    history: list[dict[str, str]] = [{"role": "system", "content": system}] if system else []
+    out: list[dict[str, Any]] = []
+    turn = 0
+    for m in rec.get("messages") or []:
+        text = " ".join(b.get("text", "") for b in m.get("content") or []).strip()
+        if m.get("role") == "assistant":
+            turn += 1
+            suffix = f"-t{turn}" if sum(x.get("role") == "assistant" for x in rec["messages"]) > 1 else ""
+            out.append(
+                {
+                    "id": f"{record_id}{suffix}",
+                    "messages": [dict(h) for h in history],
+                    "reference_answer": text,
+                }
+            )
+        history.append({"role": m.get("role", ""), "content": text})
+    return out
+
+
+def validate_rft_record(rec: Any) -> list[str]:
+    if not isinstance(rec, dict):
+        return ["not a JSON object"]
+    msgs = rec.get("messages")
+    if not isinstance(msgs, list) or not msgs:
+        return ["messages must be a non-empty list"]
+    errs = []
+    for i, m in enumerate(msgs):
+        if not isinstance(m, dict) or m.get("role") not in ("system", "user", "assistant"):
+            errs.append(f"message {i}: role must be system, user or assistant")
+        elif not isinstance(m.get("content"), str) or not m["content"].strip():
+            errs.append(f"message {i}: content must be a non-empty string")
+        elif m["role"] == "system" and i != 0:
+            errs.append(f"message {i}: system message must come first")
+    if isinstance(msgs[-1], dict) and msgs[-1].get("role") != "user":
+        errs.append("last message must be the user prompt (no assistant answer)")
+    if "reference_answer" in rec and rec["reference_answer"] in ("", None):
+        errs.append("reference_answer is empty")
+    return errs
