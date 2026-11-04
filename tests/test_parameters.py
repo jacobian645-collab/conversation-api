@@ -168,3 +168,9 @@ def test_periodic_refresh(ssm: Any) -> None:
             time.sleep(0.2)
         else:
             pytest.fail("catalog was not refreshed")
+
+
+def test_empty_ssm_reference_fails_fast_instead_of_reaching_bedrock() -> None:
+    """export BEDROCK_SONNET_ID="ssm:$PARAM" in a shell where $PARAM is empty gives just "ssm:"."""
+    with pytest.raises(CatalogError, match=r"models\.claude-sonnet\.model is 'ssm:' with no parameter name"):
+        ModelRegistry.from_file(default_models_file(), env={"BEDROCK_SONNET_ID": "ssm:"})

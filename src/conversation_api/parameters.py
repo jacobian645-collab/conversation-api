@@ -33,7 +33,7 @@ class ParameterResolver(Protocol):
 
 
 def is_reference(value: Any) -> bool:
-    return isinstance(value, str) and value.startswith(PREFIX) and len(value) > len(PREFIX)
+    return isinstance(value, str) and value.startswith(PREFIX)
 
 
 class SsmResolver:
@@ -121,6 +121,12 @@ def resolve_references(
 
     def walk(value: Any, path: Path) -> Any:
         if is_reference(value):
+            if not value[len(PREFIX) :].strip():
+                where = ".".join(path) or "value"
+                raise ParameterError(
+                    f"{where} is 'ssm:' with no parameter name. If it came from an environment variable "
+                    '(e.g. BEDROCK_SONNET_ID="ssm:$PARAM"), the variable it was built from was empty'
+                )
             refs[path] = value
             return fetch(value)
         if isinstance(value, dict):
