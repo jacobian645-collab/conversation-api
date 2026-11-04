@@ -57,6 +57,8 @@ def test_resolver_reads_string_and_securestring(ssm: Any) -> None:
     r = SsmResolver()
     assert r.get(PARAM).endswith("application-inference-profile/abc")
     assert r.get("/x/secret") == "s3cret-id"  # decrypted and trimmed
+    ssm.put_parameter(Name="/x/quoted", Value='"us.anthropic.claude-sonnet-5-5"', Type="String")
+    assert r.get("/x/quoted") == "us.anthropic.claude-sonnet-5-5"
 
 
 def test_resolver_explains_missing_parameter(ssm: Any) -> None:

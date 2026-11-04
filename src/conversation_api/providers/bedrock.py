@@ -8,6 +8,7 @@ Credentials come from the standard AWS chain: in AWS CloudShell they are already
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -39,6 +40,16 @@ _UNAVAILABLE = {
     "UnrecognizedClientException",
     "ExpiredTokenException",
 }
+
+
+def region_for(model_id: str, configured: str | None) -> str | None:
+    """An ARN model ID (inference profile, provisioned throughput, custom model) only works in its own region,
+    so its region wins over the configured one."""
+    if model_id.startswith("arn:"):
+        parts = model_id.split(":")
+        if len(parts) > 3 and parts[3]:
+            return parts[3]
+    return configured or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
 
 
 def to_converse_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
@@ -78,7 +89,7 @@ class BedrockProvider(Provider):
         import boto3
         from botocore.config import Config
 
-        region = self.spec.options.get("region")
+        region = self.region
         cfg = Config(
             read_timeout=self.timeout_s,
             connect_timeout=10,
@@ -86,6 +97,10 @@ class BedrockProvider(Provider):
             user_agent_extra="conversation-api",
         )
         return boto3.client("bedrock-runtime", region_name=region or None, config=cfg)
+
+    @property
+    def region(self) -> str | None:
+        return region_for(self.spec.model, self.spec.options.get("region"))
 
     @classmethod
     def credentials_hint(cls, spec: Any) -> tuple[bool, str]:
@@ -106,7 +121,14 @@ class BedrockProvider(Provider):
         if isinstance(exc, ClientError):
             code = exc.response.get("Error", {}).get("Code", "")
             status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-            msg = f"bedrock {code}: {exc.response.get('Error', {}).get('Message', exc)}"
+            detail = exc.response.get("Error", {}).get("Message", str(exc))
+            msg = f"bedrock {code} (model {self.spec.model!r}, region {self.region}): {detail}"
+            if code == "ValidationException" and "model identifier" in detail.lower():
+                msg += (
+                    f". Check the ID exists in {self.region}: aws bedrock list-inference-profiles "
+                    f"--region {self.region}. Cross-region profile prefixes (us., eu., apac., au., global.) "
+                    "must match the region, and an ARN must be from the same account."
+                )
             if code in _RETRYABLE:
                 return self.error(msg, ErrorKind.RETRYABLE, status)
             if code in _UNAVAILABLE:

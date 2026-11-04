@@ -9,7 +9,12 @@ from botocore.exceptions import ClientError
 from conversation_api.providers import ChatMessage, ErrorKind, GenerationRequest, StreamEnd, TextDelta
 from conversation_api.providers.anthropic import build_anthropic_kwargs, parse_anthropic_message
 from conversation_api.providers.base import kind_for_status
-from conversation_api.providers.bedrock import BedrockProvider, build_converse_kwargs, parse_converse_response
+from conversation_api.providers.bedrock import (
+    BedrockProvider,
+    build_converse_kwargs,
+    parse_converse_response,
+    region_for,
+)
 from conversation_api.providers.gemini import GeminiProvider, build_gemini_config, to_gemini_contents
 from conversation_api.providers.openai_compat import OllamaProvider, OpenAIProvider, to_openai_messages
 from conversation_api.registry import ModelSpec
@@ -221,3 +226,27 @@ def test_availability_reports_missing_credentials(monkeypatch: pytest.MonkeyPatc
     assert OpenAIProvider.availability(spec("openai"))[0]
     monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     assert not GeminiProvider.availability(spec("gemini", vertexai=True))[0]
+
+
+def test_bedrock_region_comes_from_arn_model_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    arn = "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc"
+    assert region_for(arn, "ap-south-1") == "us-east-1"
+    assert region_for("global.anthropic.claude-sonnet-5-5", "ap-south-1") == "ap-south-1"
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    assert region_for("us.amazon.nova-pro-v1:0", None) == "eu-west-1"
+
+
+async def test_invalid_model_id_error_names_model_region_and_fix() -> None:
+    err = ClientError(
+        {
+            "Error": {"Code": "ValidationException", "Message": "The provided model identifier is invalid."},
+            "ResponseMetadata": {"HTTPStatusCode": 400},
+        },
+        "Converse",
+    )
+    p = BedrockProvider(spec("bedrock", region="ap-south-1"), client=FakeBedrock(err))
+    with pytest.raises(Exception) as exc:
+        await p.complete(REQ)
+    msg = str(exc.value)
+    assert "model 'm-1', region ap-south-1" in msg and "list-inference-profiles --region ap-south-1" in msg
+    assert exc.value.kind is ErrorKind.INVALID_REQUEST

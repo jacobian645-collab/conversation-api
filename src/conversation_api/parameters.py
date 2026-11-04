@@ -72,7 +72,10 @@ class SsmResolver:
             resp = self._clients[region].get_parameter(Name=name, WithDecryption=True)
         except Exception as exc:
             raise ParameterError(self._explain(name, region, exc)) from exc
-        return str(resp["Parameter"]["Value"]).strip()
+        value = str(resp["Parameter"]["Value"]).strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1].strip()  # a quoted value ("us.anthropic...") is a common copy-paste slip
+        return value
 
     @staticmethod
     def _explain(name: str, region: str | None, exc: Exception) -> str:
