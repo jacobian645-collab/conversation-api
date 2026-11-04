@@ -62,6 +62,34 @@ flowchart LR
 Names resolve as **alias → catalog entry → ad-hoc `provider:model-id`** (for example
 `bedrock:us.meta.llama3-3-70b-instruct-v1:0`; can be turned off with `CONVO_ALLOW_ADHOC_MODELS=false`).
 
+### Model IDs from AWS Parameter Store
+
+Any catalog value can be read from **Systems Manager Parameter Store** by writing `ssm:/parameter/name`
+instead of the value, either in `config/models.yaml` or through the environment variable that value already
+reads. The model ID then lives in AWS, where it can be changed without touching the repo or the server:
+
+```bash
+aws ssm put-parameter --name /conversation-api/models/sonnet --type String \
+  --value arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc123 --overwrite
+
+export BEDROCK_SONNET_ID=ssm:/conversation-api/models/sonnet   # used by claude-sonnet (alias smart)
+convo serve                       # resolves the parameter at startup; fails fast if it can't read it
+convo models                      # └ model ID from ssm:/conversation-api/models/sonnet
+
+aws ssm put-parameter --name /conversation-api/models/sonnet --type String \
+  --value global.anthropic.claude-sonnet-5-5 --overwrite
+convo reload                      # claude-sonnet: bedrock:arn:…/abc123 → bedrock:global.anthropic.claude-sonnet-5-5
+```
+
+- Works for plain IDs, inference profile ARNs and provisioned-throughput / custom model ARNs; `String` and
+  `SecureString` (decrypted) parameters; and parameter ARNs (`ssm:arn:aws:ssm:<region>:…`, read in that region).
+  Otherwise the region is `CONVO_SSM_REGION`, then `AWS_REGION`.
+- `convo reload` (`POST /v1/admin/reload-models`) or `CONVO_CATALOG_REFRESH_S=300` re-reads the catalog and
+  parameters while serving. Existing conversations move to the new ID on their next turn. If a reload
+  fails (parameter deleted, access denied), the previous catalog keeps serving and the error is returned.
+- IAM: `ssm:GetParameter` on the parameter, plus `kms:Decrypt` for a SecureString with a customer-managed key.
+- `CONVO_DEFAULT_MODEL=ssm:/…` works too, to choose the default model name from Parameter Store.
+
 ---
 
 ## Run it in a cloud shell (about 60 seconds)
@@ -113,7 +141,8 @@ platform IAM layer and the app key can both be in place at once.
 | `PATCH /v1/conversations/{id}` | `{model?, system?}` | swap model / change system prompt; history kept |
 | `DELETE /v1/conversations/{id}` | | `204` |
 | `POST /v1/conversations/{id}/messages` | `{content, model?, stream?, max_tokens?, temperature?}` | turn; `model` here applies to **this turn only** |
-| `GET /v1/models` | | catalog with provider, model ID, aliases, fallbacks, and a local readiness check |
+| `GET /v1/models` | | catalog with provider, model ID (and `model_source` if read from Parameter Store), aliases, fallbacks, and a local readiness check |
+| `POST /v1/admin/reload-models` | | re-read the catalog and Parameter Store values; returns what changed (503 and no change on failure) |
 | `GET /healthz` | | liveness, default model, store (no auth, for probes) |
 
 A **turn** response:
@@ -195,6 +224,8 @@ credentials use each SDK's standard variables.
 | `CONVO_ALLOW_ADHOC_MODELS` | `true` | allow `provider:model-id` names outside the catalog |
 | `CONVO_MODELS_FILE` | `config/models.yaml` | the catalog |
 | `CONVO_REQUEST_TIMEOUT_S` | `120` | per model attempt |
+| `CONVO_CATALOG_REFRESH_S` | `0` | re-read the catalog and `ssm:` parameters every N seconds (0 = at start and on reload) |
+| `CONVO_SSM_REGION` | `AWS_REGION` | Parameter Store region, when it differs |
 
 The catalog supports `${VAR}` and `${VAR:-default}`, so model IDs can be set per environment without
 editing the file (`BEDROCK_SONNET_ID`, `AZURE_OPENAI_DEPLOYMENT`, `GEMINI_MODEL`, …). It is validated at
@@ -210,7 +241,7 @@ startup: unknown providers, aliases pointing nowhere, missing fallbacks and a ba
 ```bash
 make install     # pip install -e ".[dev]"
 make lint        # ruff + mypy
-make test        # 53 offline tests, no cloud credentials needed
+make test        # 64 offline tests, no cloud credentials needed (Parameter Store is simulated with moto)
 make run         # API on 127.0.0.1:8080
 ```
 
@@ -218,7 +249,9 @@ The suite runs with no network or credentials. It covers model resolution and ca
 mid-conversation (the next model receives the earlier model's turns); per-turn overrides; fallback on
 retryable and unavailable errors and no fallback on invalid requests; atomic turns; history trimming;
 streaming fallback before the first token and discarding a stream that fails after it; serialised
-concurrent turns; auth; the SQLite store across restarts; and each provider adapter's request mapping,
+concurrent turns; auth; the SQLite store across restarts; Parameter Store references (String and
+SecureString, env-var indirection, ARN regions, fail-fast on a missing parameter, live reload, failed reload
+keeping the last good catalog, periodic refresh); and each provider adapter's request mapping,
 response parsing and error classification against fake SDK clients. CI runs it on Python 3.10 and 3.12 and
 then drives the CLI and the curl client against a live server.
 
@@ -229,10 +262,11 @@ config/models.yaml              model catalog: providers, aliases, fallbacks, pr
 src/conversation_api/
   app.py                        FastAPI routes, SSE, auth, structured errors, JSON logs
   service.py                    turns, swap, fallback, history fitting, per-conversation locks
-  registry.py                   catalog loading, env interpolation, validation, name resolution
+  registry.py                   catalog loading, env interpolation, validation, name resolution, reload diff
+  parameters.py                 ssm: references → AWS Systems Manager Parameter Store
   store.py                      memory (LRU) and SQLite stores behind one interface
   providers/                    base contract + bedrock, anthropic, openai_compat, gemini, mock
-  cli.py                        `convo`: serve, models, ask, say, swap, chat, history, list, rm
+  cli.py                        `convo`: serve, models, ask, say, swap, reload, chat, history, list, rm
 scripts/cloudshell_quickstart.sh  detect cloud shell → install → run → smoke test
 scripts/convo.sh                curl-only client
 deploy/                         Cloud Run and Azure Container Apps

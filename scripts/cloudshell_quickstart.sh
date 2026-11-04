@@ -91,6 +91,12 @@ case "$CLOUD" in
 AWS CloudShell: Bedrock credentials are already here. Try:
   convo ask "Explain the CAP theorem in 3 lines" -m smart
   (needs Bedrock model access for Claude in your region; AWS_REGION picks the region)
+
+Model ID kept in Parameter Store? Point the catalog at it, then restart:
+  export BEDROCK_SONNET_ID=ssm:/your/parameter/name
+  ./scripts/cloudshell_quickstart.sh stop && ./scripts/cloudshell_quickstart.sh
+  convo models        # shows "model ID from ssm:/your/parameter/name"
+  convo reload        # after changing the parameter: picks up the new ID, no restart
 EOF
   ;;
   azure) cat <<'EOF'

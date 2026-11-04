@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hmac
 import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -16,13 +18,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import __version__
 from .config import Settings, get_settings
-from .registry import ModelRegistry, UnknownModelError
+from .registry import CatalogError, ModelRegistry, UnknownModelError
 from .schemas import (
     ChatRequest,
     Conversation,
     ConversationSummary,
     CreateConversation,
     ModelInfo,
+    ReloadResult,
     SendMessage,
     TurnResponse,
     UpdateConversation,
@@ -65,18 +68,48 @@ def build_store(settings: Settings) -> ConversationStore:
     return MemoryStore(settings.max_conversations)
 
 
-def create_app(settings: Settings | None = None, service: ConversationService | None = None) -> FastAPI:
+def load_registry(settings: Settings) -> ModelRegistry:
+    """Read the catalog: file, then ${ENV} interpolation, then ssm: Parameter Store references."""
+    return ModelRegistry.from_file(
+        settings.models_file,
+        default_override=settings.default_model,
+        allow_adhoc=settings.allow_adhoc_models,
+    )
+
+
+def create_app(
+    settings: Settings | None = None,
+    service: ConversationService | None = None,
+    registry_loader: Callable[[], ModelRegistry] | None = None,
+) -> FastAPI:
     settings = settings or get_settings()
+    loader: Callable[[], ModelRegistry] = registry_loader or (lambda: load_registry(settings))
+
+    async def reload_catalog() -> ReloadResult:
+        new = await asyncio.to_thread(loader)  # Parameter Store calls are blocking
+        changes = svc().reload(new)
+        return ReloadResult(
+            models=len(new.models),
+            default_model=new.default,
+            changes=changes,
+            parameters=sorted(set(new.sources.values())),
+        )
+
+    async def refresh_forever(every_s: int) -> None:
+        while True:
+            await asyncio.sleep(every_s)
+            try:
+                result = await reload_catalog()
+                if result.changes:
+                    log.info("catalog.refresh_changed", extra={"changes": result.changes})
+            except Exception as exc:  # keep serving on the last good catalog
+                log.warning("catalog.refresh_failed", extra={"error": str(exc)})
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(settings.log_level)
         if app.state.service is None:
-            registry = ModelRegistry.from_file(
-                settings.models_file,
-                default_override=settings.default_model,
-                allow_adhoc=settings.allow_adhoc_models,
-            )
+            registry = loader()
             app.state.service = ConversationService(
                 registry, build_store(settings), timeout_s=settings.request_timeout_s
             )
@@ -89,6 +122,8 @@ def create_app(settings: Settings | None = None, service: ConversationService | 
                 "store": svc.store.kind,
                 "auth": bool(settings.api_key),
                 "models": len(svc.registry.models),
+                "parameters": sorted(set(svc.registry.sources.values())),
+                "catalog_refresh_s": settings.catalog_refresh_s,
             },
         )
         if not settings.api_key and settings.host not in ("127.0.0.1", "localhost"):
@@ -96,7 +131,16 @@ def create_app(settings: Settings | None = None, service: ConversationService | 
                 "server.no_api_key",
                 extra={"host": settings.host, "hint": "set CONVO_API_KEY before exposing this port"},
             )
+        refresher = (
+            asyncio.create_task(refresh_forever(settings.catalog_refresh_s))
+            if settings.catalog_refresh_s
+            else None
+        )
         yield
+        if refresher:
+            refresher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await refresher
 
     app = FastAPI(
         title="Conversation API",
@@ -212,6 +256,15 @@ def create_app(settings: Settings | None = None, service: ConversationService | 
     @app.get("/v1/models", response_model=list[ModelInfo], dependencies=v1, tags=["models"])
     async def list_models() -> list[ModelInfo]:
         return svc().list_models()
+
+    @app.post("/v1/admin/reload-models", response_model=ReloadResult, dependencies=v1, tags=["models"])
+    async def reload_models() -> Any:
+        """Re-read config/models.yaml and any ssm: Parameter Store values without restarting.
+        On failure nothing changes and the previous catalog keeps serving."""
+        try:
+            return await reload_catalog()
+        except CatalogError as exc:
+            return error(503, "reload_failed", str(exc))
 
     @app.post(
         "/v1/conversations",

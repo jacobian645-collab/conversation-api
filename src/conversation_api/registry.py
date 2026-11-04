@@ -4,18 +4,23 @@ Resolution order for a requested name:
   1. an alias            ("smart" -> "claude-sonnet")
   2. a catalog entry     ("claude-sonnet")
   3. an ad-hoc reference ("bedrock:us.meta.llama3-3-70b-instruct-v1:0"), if allowed by settings
+
+Catalog values can come from the environment (${VAR}, ${VAR:-default}) and from AWS Systems Manager
+Parameter Store (`ssm:/path/to/param`); see parameters.py.
 """
 
 from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from .parameters import ParameterError, ParameterResolver, SsmResolver, resolve_references
 from .providers import PROVIDERS
 
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
@@ -90,11 +95,17 @@ def _interpolate(value: Any, env: dict[str, str]) -> Any:
 
 class ModelRegistry:
     def __init__(
-        self, models: dict[str, ModelSpec], aliases: dict[str, str], default: str, allow_adhoc: bool = True
+        self,
+        models: dict[str, ModelSpec],
+        aliases: dict[str, str],
+        default: str,
+        allow_adhoc: bool = True,
+        sources: dict[tuple[str, ...], str] | None = None,
     ):
         self.models = models
         self.aliases = aliases
         self.allow_adhoc = allow_adhoc
+        self.sources = sources or {}  # catalog path -> "ssm:/..." it was read from
         self._validate(default)
         self.default = default
 
@@ -107,12 +118,19 @@ class ModelRegistry:
         default_override: str | None = None,
         allow_adhoc: bool = True,
         env: dict[str, str] | None = None,
+        resolver_factory: Callable[[], ParameterResolver] | None = None,
     ) -> ModelRegistry:
         try:
             raw = yaml.safe_load(Path(path).read_text()) or {}
         except FileNotFoundError as exc:
             raise CatalogError(f"model catalog not found: {path}") from exc
-        return cls.from_dict(raw, default_override=default_override, allow_adhoc=allow_adhoc, env=env)
+        return cls.from_dict(
+            raw,
+            default_override=default_override,
+            allow_adhoc=allow_adhoc,
+            env=env,
+            resolver_factory=resolver_factory,
+        )
 
     @classmethod
     def from_dict(
@@ -122,8 +140,15 @@ class ModelRegistry:
         default_override: str | None = None,
         allow_adhoc: bool = True,
         env: dict[str, str] | None = None,
+        resolver_factory: Callable[[], ParameterResolver] | None = None,
     ) -> ModelRegistry:
         data = _interpolate(raw, dict(os.environ) if env is None else env)
+        if default_override:
+            data["default"] = default_override  # may itself be an ssm: reference
+        try:
+            data, sources = resolve_references(data, resolver_factory or SsmResolver)
+        except ParameterError as exc:
+            raise CatalogError(f"Parameter Store: {exc}") from exc
         models: dict[str, ModelSpec] = {}
         for name, body in (data.get("models") or {}).items():
             if not isinstance(body, dict) or "provider" not in body or "model" not in body:
@@ -135,8 +160,8 @@ class ModelRegistry:
                 )
             models[name] = ModelSpec(name=name, **body)
         aliases = {k: v for k, v in (data.get("aliases") or {}).items() if v}
-        default = default_override or data.get("default") or next(iter(models), "")
-        return cls(models, aliases, default, allow_adhoc)
+        default = data.get("default") or next(iter(models), "")
+        return cls(models, aliases, default, allow_adhoc, sources)
 
     def _validate(self, default: str) -> None:
         if not self.models:
@@ -182,6 +207,28 @@ class ModelRegistry:
 
     def names(self) -> list[str]:
         return sorted(self.aliases) + sorted(self.models)
+
+    def source_of(self, model_name: str) -> str | None:
+        """Where a catalog entry's model ID came from, if not written in the file (e.g. "ssm:/x/y")."""
+        return self.sources.get(("models", model_name, "model"))
+
+    def describe_changes(self, new: ModelRegistry) -> list[dict[str, Any]]:
+        """What a reload would change: model IDs, providers, added/removed entries, alias targets, default."""
+        changes: list[dict[str, Any]] = []
+        for name in sorted(set(self.models) | set(new.models)):
+            old_s, new_s = self.models.get(name), new.models.get(name)
+            before = f"{old_s.provider}:{old_s.model}" if old_s else None
+            after = f"{new_s.provider}:{new_s.model}" if new_s else None
+            if before != after:
+                changes.append({"model": name, "from": before, "to": after})
+        for alias in sorted(set(self.aliases) | set(new.aliases)):
+            if self.aliases.get(alias) != new.aliases.get(alias):
+                changes.append(
+                    {"alias": alias, "from": self.aliases.get(alias), "to": new.aliases.get(alias)}
+                )
+        if self.default != new.default:
+            changes.append({"default": True, "from": self.default, "to": new.default})
+        return changes
 
     def aliases_for(self, model_name: str) -> list[str]:
         return sorted(a for a, t in self.aliases.items() if t == model_name)

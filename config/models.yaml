@@ -15,6 +15,9 @@
 #   anything else   provider options (region, base_url, api_version, vertexai, location, ...)
 #
 # ${VAR} and ${VAR:-default} are read from the environment when the file loads.
+# Any value written as ssm:/path/to/param (directly, or via an env var) is read from AWS Systems Manager
+# Parameter Store, e.g.  export BEDROCK_SONNET_ID=ssm:/conversation-api/models/sonnet
+# Change the parameter, then `convo reload` (or set CONVO_CATALOG_REFRESH_S) to pick it up without a restart.
 # Model IDs change. Check the provider console for what your account and region can call.
 
 default: ${CONVO_DEFAULT_MODEL:-mock}

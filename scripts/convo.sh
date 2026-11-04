@@ -7,6 +7,7 @@
 #   ./scripts/convo.sh swap <id> <model>                   change the model for later turns (history kept)
 #   ./scripts/convo.sh stream "Explain SSE" [model]        raw Server-Sent Events
 #   ./scripts/convo.sh history <id>
+#   ./scripts/convo.sh reload                             re-read models.yaml + Parameter Store values
 #
 # Env: CONVO_URL (default http://127.0.0.1:8080), CONVO_API_KEY, CONVO_BEARER_TOKEN
 set -euo pipefail
@@ -30,7 +31,7 @@ call() {  # prints the body on success; on HTTP errors prints the structured err
 cmd="${1:-help}"; shift || true
 case "$cmd" in
   models)
-    call "$URL/v1/models" | pretty '.[] | {name, provider, model_id, available, status, aliases}' ;;
+    call "$URL/v1/models" | pretty '.[] | {name, provider, model_id, model_source, available, status, aliases}' ;;
   ask)
     call -X POST "$URL/v1/chat" -d "$(json "content=${1:?text}" "model=${2:-}")" \
       | pretty '{reply: .message.content, conversation_id, model_used: .model_used.name, fell_back, usage, latency_ms}' ;;
@@ -43,8 +44,10 @@ case "$cmd" in
   stream)
     curl -sS -N "${HDR[@]}" -X POST "$URL/v1/chat" \
       -d "$(python3 -c 'import json,sys; print(json.dumps({"content": sys.argv[1], "model": sys.argv[2] or None, "stream": True}))' "${1:?text}" "${2:-}")" ;;
+  reload)
+    call -X POST "$URL/v1/admin/reload-models" -d '{}' | pretty ;;
   history)
     call "$URL/v1/conversations/${1:?id}" | pretty '{id, model, model_history, messages: [.messages[] | {role, model: .model.name, content}]}' ;;
   *)
-    sed -n '2,12p' "$0" ;;
+    sed -n '2,13p' "$0" ;;
 esac

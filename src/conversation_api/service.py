@@ -132,6 +132,7 @@ class ConversationService:
                     name=spec.name,
                     provider=spec.provider,
                     model_id=spec.model,
+                    model_source=self.registry.source_of(spec.name),
                     description=spec.description,
                     aliases=self.registry.aliases_for(spec.name),
                     is_default=spec.name == default,
@@ -143,6 +144,16 @@ class ConversationService:
                 )
             )
         return out
+
+    def reload(self, new: ModelRegistry) -> list[dict[str, Any]]:
+        """Swap in a freshly loaded catalog. In-flight turns finish on the provider they already hold;
+        conversations resolve their model name against the new catalog on their next turn."""
+        changes = self.registry.describe_changes(new)
+        self.registry = new
+        self._providers = {}
+        self._availability = {}
+        log.info("catalog.reloaded", extra={"models": len(new.models), "changes": changes})
+        return changes
 
     # ---- conversation CRUD ---------------------------------------------------------------------
     async def create(

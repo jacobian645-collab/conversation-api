@@ -5,6 +5,7 @@
   convo ask "question" -m smart       one-shot (prints the conversation id so you can continue)
   convo say <id> "follow-up"          continue a conversation
   convo swap <id> gpt                 change the model for later turns (history is kept)
+  convo reload                        re-read models.yaml + Parameter Store values without a restart
   convo chat -m fast                  interactive; type /help inside
 
 Environment: CONVO_URL (default http://127.0.0.1:8080), CONVO_API_KEY, and CONVO_BEARER_TOKEN for a
@@ -150,6 +151,8 @@ def cmd_models(client: Client, args: argparse.Namespace) -> None:
         state = "ready" if m["available"] else _c(DIM, "not ready")
         alias = f" [{', '.join(m['aliases'])}]" if m["aliases"] else ""
         print(f"{mark} {m['name']:<{w}}  {m['provider']:<12} {state:<10} {m['model_id']}{_c(DIM, alias)}")
+        if m.get("model_source"):
+            print(_c(DIM, f"  {'':<{w}}  └ model ID from {m['model_source']}"))
         if not m["available"]:
             print(_c(DIM, f"  {'':<{w}}  └ {m['status']}"))
     print(_c(DIM, "\n* default. Ad-hoc models also work: -m bedrock:<model-id>, -m openai:<model>, ..."))
@@ -181,6 +184,18 @@ def cmd_say(client: Client, args: argparse.Namespace) -> None:
         {k: v for k, v in body.items() if v is not None},
         not args.no_stream,
     )
+
+
+def cmd_reload(client: Client, args: argparse.Namespace) -> None:
+    r = client.post("/v1/admin/reload-models", {})
+    print(f"catalog reloaded: {r['models']} models, default {r['default_model']}")
+    for ref in r["parameters"]:
+        print(_c(DIM, f"  read {ref}"))
+    if not r["changes"]:
+        print("  no changes")
+    for c in r["changes"]:
+        what = c.get("model") or (f"alias {c['alias']}" if "alias" in c else "default")
+        print(f"  {what}: {c['from']} → {c['to']}")
 
 
 def cmd_swap(client: Client, args: argparse.Namespace) -> None:
@@ -321,6 +336,8 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--max-tokens", type=int)
         s.add_argument("--no-stream", action="store_true")
 
+    sub.add_parser("reload", help="re-read the catalog and Parameter Store values (no restart)")
+
     s = sub.add_parser("swap", help="change a conversation's model (history is kept)")
     s.add_argument("id")
     s.add_argument("model")
@@ -353,6 +370,7 @@ def main(argv: list[str] | None = None) -> None:
         "ask": cmd_ask,
         "say": cmd_say,
         "swap": cmd_swap,
+        "reload": cmd_reload,
         "history": cmd_history,
         "list": cmd_list,
         "rm": cmd_rm,

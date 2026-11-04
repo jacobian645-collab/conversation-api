@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     default_model: str | None = None  # overrides `default:` in the catalog
     allow_adhoc_models: bool = True  # allow "provider:model-id" names that are not in the catalog
     request_timeout_s: float = 120.0
+    # Re-read the catalog (and any ssm: parameters) every N seconds; 0 = only at start and on
+    # POST /v1/admin/reload-models. On failure the previous catalog stays in place.
+    catalog_refresh_s: int = Field(default=0, ge=0)
 
     # Conversation storage
     store: Literal["memory", "sqlite"] = "memory"

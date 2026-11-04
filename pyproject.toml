@@ -30,7 +30,7 @@ gemini = ["google-genai>=1.0"]
 all = ["conversation-api[bedrock,anthropic,openai,azure,gemini]"]
 dev = [
   "conversation-api[all]",
-  "pytest>=8", "pytest-asyncio>=0.24",
+  "pytest>=8", "pytest-asyncio>=0.24", "moto[ssm]>=5.0",
   "ruff>=0.6", "mypy>=1.11", "types-PyYAML",
 ]
 

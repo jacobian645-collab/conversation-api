@@ -124,6 +124,9 @@ class ModelInfo(BaseModel):
     name: str
     provider: str
     model_id: str
+    model_source: str | None = (
+        None  # e.g. "ssm:/conversation-api/models/sonnet" when read from Parameter Store
+    )
     description: str
     aliases: list[str]
     is_default: bool
@@ -132,3 +135,10 @@ class ModelInfo(BaseModel):
     fallbacks: list[str]
     context_tokens: int
     max_tokens: int
+
+
+class ReloadResult(BaseModel):
+    models: int
+    default_model: str
+    changes: list[dict[str, Any]]
+    parameters: list[str]  # Parameter Store references read during the reload
