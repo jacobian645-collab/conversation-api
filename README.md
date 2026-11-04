@@ -120,6 +120,9 @@ bash scripts/bedrock_finetune_nova.sh status convo-nova-<timestamp>
 | Split | deterministic train/validation split by `--seed`; never takes the training set below 8 |
 | Job | `scripts/bedrock_finetune_nova.sh`: checks the base model is fine-tunable in the region, private S3 bucket (public access blocked), an IAM service role trusted only for this account's customization jobs with access to that bucket, then `create-model-customization-job` (epochs, learning rate, warmup from AWS's samples/640·160·320 guidance). `DRY_RUN=1` prints the command. The output tells you how to deploy the custom model on demand and point the API at it (`-m bedrock:<deployment-arn>` or an `ssm:` parameter). |
 
+A ready-made dataset to try the job with: [`examples/datasets/ai-ml-tutor`](examples/datasets/ai-ml-tutor)
+(112 samples of a concise AI/ML tutor, 101 train / 11 validation, including multi-turn).
+
 API: `GET /v1/training/report` and `GET /v1/training/export.jsonl?split=train|validation|all` take the same
 filters as query parameters (`where=dataset=support&validation_split=0.1`).
 
