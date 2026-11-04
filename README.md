@@ -191,8 +191,27 @@ per-conversation lock. ([ADR-0002](docs/adr/0002-conversation-state.md))
 **Fallback is policy, driven by error class.** Every provider error is classified as `retryable`
 (throttled, 5xx, timeout), `unavailable` (no SDK, credentials, access or model) or `invalid_request`. The
 first two move down the model's `fallbacks` list; the last stops, because another model will not fix a bad
-request. Streaming falls back only **before the first token**: once text has reached the client, a silent
+request (unless it is a *fallback* model that is misconfigured, which is skipped so it can't hide the original
+failure). Streaming falls back only **before the first token**: once text has reached the client, a silent
 restart on another model would splice two answers together. ([ADR-0003](docs/adr/0003-fallback-policy.md))
+
+**Bedrock throttling: adaptive retries, then a smaller model.** The Bedrock client runs botocore's
+**adaptive** retry mode (exponential backoff plus a client-side token bucket that slows the client when
+Bedrock throttles). Clients are shared per region, so that rate limiter sees all of this process's traffic
+to the region. If a `ThrottlingException` still comes back after those retries, the adapter's
+`try/except BedrockThrottled` sends the request once to the entry's `throttle_fallback_model` (a smaller,
+cheaper model with separate quota). The reply records the model ID that actually answered
+(`model_used.model_id`), `fell_back: true` and the reason. In streams this happens only before the first
+token, and shows up as a `fallback` event.
+
+```yaml
+claude-sonnet:
+  provider: bedrock
+  model: ${BEDROCK_SONNET_ID:-global.anthropic.claude-sonnet-5-5}
+  retry_mode: adaptive                    # legacy | standard | adaptive
+  max_attempts: ${BEDROCK_MAX_ATTEMPTS:-3} # retries after the first call (4 calls in total)
+  throttle_fallback_model: ${BEDROCK_SMALL_MODEL_ID:-global.anthropic.claude-haiku-5-5}  # ssm:/... works too
+```
 
 **Each model gets a history budget.** `context_tokens − max_tokens` bounds what is sent; the oldest turns
 are dropped first, the newest message is always kept, and the window always starts on a user turn.
@@ -241,7 +260,7 @@ startup: unknown providers, aliases pointing nowhere, missing fallbacks and a ba
 ```bash
 make install     # pip install -e ".[dev]"
 make lint        # ruff + mypy
-make test        # 64 offline tests, no cloud credentials needed (Parameter Store is simulated with moto)
+make test        # 80 offline tests, no cloud credentials needed (Parameter Store is simulated with moto)
 make run         # API on 127.0.0.1:8080
 ```
 
@@ -251,7 +270,9 @@ retryable and unavailable errors and no fallback on invalid requests; atomic tur
 streaming fallback before the first token and discarding a stream that fails after it; serialised
 concurrent turns; auth; the SQLite store across restarts; Parameter Store references (String and
 SecureString, env-var indirection, ARN regions, fail-fast on a missing parameter, live reload, failed reload
-keeping the last good catalog, periodic refresh); and each provider adapter's request mapping,
+keeping the last good catalog, periodic refresh); Bedrock adaptive retry config and shared clients, the
+ThrottlingException → smaller-model fallback (Converse and ConverseStream, before and after the first
+token); and each provider adapter's request mapping,
 response parsing and error classification against fake SDK clients. CI runs it on Python 3.10 and 3.12 and
 then drives the CLI and the curl client against a live server.
 

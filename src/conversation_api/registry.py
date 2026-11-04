@@ -159,6 +159,10 @@ class ModelRegistry:
                     f"(known: {', '.join(sorted(PROVIDERS))})"
                 )
             models[name] = ModelSpec(name=name, **body)
+            try:
+                PROVIDERS[body["provider"]].validate_options(models[name])
+            except ValueError as exc:
+                raise CatalogError(f"model {name!r}: {exc}") from exc
         aliases = {k: v for k, v in (data.get("aliases") or {}).items() if v}
         default = data.get("default") or next(iter(models), "")
         return cls(models, aliases, default, allow_adhoc, sources)

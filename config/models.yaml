@@ -12,6 +12,9 @@
 #   temperature     optional; omitted = provider default (some newer models reject it)
 #   fallbacks       names tried in order if this model is throttled, down, or not configured
 #   price_per_mtok  optional {input, output} USD per million tokens, used for the cost estimate
+#   bedrock only:   retry_mode (legacy|standard|adaptive, default adaptive), max_attempts (SDK retries after
+#                   the first call, default 3 = up to 4 calls),
+#                   throttle_fallback_model: smaller model ID tried once if ThrottlingException survives retries
 #   anything else   provider options (region, base_url, api_version, vertexai, location, ...)
 #
 # ${VAR} and ${VAR:-default} are read from the environment when the file loads.
@@ -37,6 +40,9 @@ models:
     description: Claude Sonnet 5.5 on Bedrock (global cross-region inference profile)
     max_tokens: 2048
     context_tokens: 200000
+    retry_mode: adaptive                       # SDK backoff + client-side rate limiting on throttling
+    max_attempts: ${BEDROCK_MAX_ATTEMPTS:-3}
+    throttle_fallback_model: ${BEDROCK_SMALL_MODEL_ID:-global.anthropic.claude-haiku-5-5}
     fallbacks: [claude-haiku, nova-pro]
 
   claude-haiku:

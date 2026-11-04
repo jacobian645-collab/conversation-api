@@ -8,6 +8,7 @@ the model in the middle of a conversation: nothing in the history belongs to one
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator
@@ -47,6 +48,8 @@ class Completion:
     text: str
     usage: Usage = field(default_factory=Usage)
     stop_reason: str | None = None
+    model_id: str | None = None  # set when the provider answered with a different model than requested
+    fallback_reason: str | None = None  # why it switched (e.g. "ThrottlingException on <id>")
 
 
 @dataclass
@@ -58,9 +61,19 @@ class TextDelta:
 class StreamEnd:
     usage: Usage = field(default_factory=Usage)
     stop_reason: str | None = None
+    model_id: str | None = None
 
 
-StreamEvent = TextDelta | StreamEnd
+@dataclass
+class ModelSwitch:
+    """Emitted mid-stream, before any text, when a provider moves to another model (e.g. on throttling)."""
+
+    from_model: str
+    to_model: str
+    reason: str
+
+
+StreamEvent = TextDelta | StreamEnd | ModelSwitch
 
 
 class ErrorKind(str, Enum):
@@ -70,11 +83,20 @@ class ErrorKind(str, Enum):
 
 
 class ProviderError(Exception):
-    def __init__(self, message: str, *, kind: ErrorKind, provider: str, status: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: ErrorKind,
+        provider: str,
+        status: int | None = None,
+        code: str | None = None,
+    ):
         super().__init__(message)
         self.kind = kind
         self.provider = provider
         self.status = status
+        self.code = code  # provider's own error code, e.g. "ThrottlingException"
 
     @property
     def can_fall_back(self) -> bool:
@@ -119,6 +141,11 @@ class Provider(ABC):
         yield StreamEnd(result.usage, result.stop_reason)
 
     @classmethod
+    def validate_options(cls, spec: ModelSpec) -> None:
+        """Raise ValueError for bad provider options so a catalog mistake fails at load, not at first call."""
+        return None
+
+    @classmethod
     def availability(cls, spec: ModelSpec) -> tuple[bool, str]:
         """Cheap, local check (no network): is the SDK installed and is there something that looks like a credential?"""
         if cls.sdk_module:
@@ -148,22 +175,42 @@ async def iterate_in_thread(make_iter: Any) -> AsyncIterator[Any]:
     """Drive a blocking iterator (boto3 event streams) from a worker thread without blocking the event loop."""
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[Any] = asyncio.Queue()
+    stop = threading.Event()  # set when the consumer goes away (error, client disconnect, early return)
+    holder: dict[str, Any] = {}
+
+    def post(item: Any) -> None:
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, item)
+        except RuntimeError:  # event loop already closed
+            stop.set()
 
     def worker() -> None:
         try:
             iterator: Iterator[Any] = make_iter()
+            holder["it"] = iterator
             for item in iterator:
-                loop.call_soon_threadsafe(queue.put_nowait, item)
+                if stop.is_set():
+                    break
+                post(item)
         except BaseException as exc:  # surfaced on the event-loop side
-            loop.call_soon_threadsafe(queue.put_nowait, exc)
+            if not stop.is_set():
+                post(exc)
         finally:
-            loop.call_soon_threadsafe(queue.put_nowait, _DONE)
+            if not stop.is_set():
+                post(_DONE)
 
     threading.Thread(target=worker, daemon=True).start()
-    while True:
-        item = await queue.get()
-        if item is _DONE:
-            return
-        if isinstance(item, BaseException):
-            raise item
-        yield item
+    try:
+        while True:
+            item = await queue.get()
+            if item is _DONE:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+    finally:
+        stop.set()
+        close = getattr(holder.get("it"), "close", None)  # botocore EventStream: release the connection
+        if callable(close):
+            with contextlib.suppress(Exception):
+                close()

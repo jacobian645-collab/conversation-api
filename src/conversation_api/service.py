@@ -21,6 +21,7 @@ from .providers import (
     Completion,
     ErrorKind,
     GenerationRequest,
+    ModelSwitch,
     Provider,
     ProviderError,
     StreamEnd,
@@ -243,11 +244,21 @@ class ConversationService:
         self, plan: _Plan, spec: ModelSpec, result: Completion, started: float, trimmed: int
     ) -> TurnResponse:
         conv = plan.conv
-        used = ModelUsed(name=spec.name, provider=spec.provider, model_id=spec.model)
+        switched = bool(result.model_id and result.model_id != spec.model)
+        if result.fallback_reason:  # the provider switched models itself (e.g. Bedrock throttling)
+            plan.attempts.append(
+                Attempt(
+                    model=spec.name, provider=spec.provider, error=result.fallback_reason, kind="retryable"
+                )
+            )
+        used = ModelUsed(name=spec.name, provider=spec.provider, model_id=result.model_id or spec.model)
         usage = UsageOut(
             input_tokens=result.usage.input_tokens,
             output_tokens=result.usage.output_tokens,
-            cost_usd=spec.cost_usd(result.usage.input_tokens, result.usage.output_tokens),
+            # catalog prices belong to spec.model; don't price a different model's tokens with them
+            cost_usd=None
+            if switched
+            else spec.cost_usd(result.usage.input_tokens, result.usage.output_tokens),
         )
         reply = StoredMessage(role="assistant", content=result.text, model=used, usage=usage)
         conv.messages += [StoredMessage(role="user", content=plan.content), reply]
@@ -299,9 +310,10 @@ class ConversationService:
                     continue
                 except ProviderError as exc:
                     self._record_failure(plan, spec, exc)
-                    if not exc.can_fall_back:
+                    if not exc.can_fall_back and spec is plan.chain[0]:
+                        # the caller's request is wrong; another model won't fix it
                         raise TurnFailed(plan.attempts, invalid_request=True) from exc
-                    continue
+                    continue  # a misconfigured *fallback* model shouldn't hide the original failure
                 return await self._commit(plan, spec, result, started, trimmed)
             raise TurnFailed(plan.attempts)
 
@@ -323,11 +335,26 @@ class ConversationService:
                         if isinstance(ev, TextDelta):
                             parts.append(ev.text)
                             yield "delta", {"text": ev.text}
+                        elif isinstance(ev, ModelSwitch):
+                            plan.attempts.append(
+                                Attempt(
+                                    model=spec.name, provider=spec.provider, error=ev.reason, kind="retryable"
+                                )
+                            )
+                            yield (
+                                "fallback",
+                                {
+                                    "from": f"{spec.name} ({ev.from_model})",
+                                    "to": ev.to_model,
+                                    "error": ev.reason,
+                                },
+                            )
                         else:
                             end = ev
                 except ProviderError as exc:
                     self._record_failure(plan, spec, exc)
-                    if parts or not exc.can_fall_back or i == len(plan.chain) - 1:
+                    stop_here = parts or (not exc.can_fall_back and i == 0) or i == len(plan.chain) - 1
+                    if stop_here:
                         yield (
                             "error",
                             {
@@ -340,7 +367,9 @@ class ConversationService:
                         return
                     yield "fallback", {"from": spec.name, "to": plan.chain[i + 1].name, "error": str(exc)}
                     continue
-                result = Completion(text="".join(parts), usage=end.usage, stop_reason=end.stop_reason)
+                result = Completion(
+                    text="".join(parts), usage=end.usage, stop_reason=end.stop_reason, model_id=end.model_id
+                )
                 turn = await self._commit(plan, spec, result, started, trimmed)
                 yield "done", turn.model_dump(mode="json")
                 return
