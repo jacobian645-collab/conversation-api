@@ -1,0 +1,14 @@
+# Example input for: convo collect examples/prompts-support.txt -m nova-pro --dataset support
+# One prompt per line, or a JSON object with "prompt" and optional "system" and "followups" (multi-turn).
+# Nova needs at least 8 training samples; AWS recommends 100 or more.
+How do I reset my password?
+How do I change the email address on my account?
+What payment methods do you accept?
+Can I get an invoice for last month's order?
+How do I cancel my subscription?
+How long does delivery take to Bengaluru?
+Do you ship internationally?
+How do I return a damaged item?
+Can I change my delivery address after ordering?
+{"prompt": "I want a refund", "followups": ["It was order 1234, delivered yesterday", "Thanks, how long will it take?"], "system": "You are a concise, friendly support agent."}
+{"prompt": "My order shows delivered but I didn't receive it", "followups": ["Order 5678"], "system": "You are a concise, friendly support agent."}

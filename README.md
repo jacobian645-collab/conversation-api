@@ -90,6 +90,42 @@ convo reload                      # claude-sonnet: bedrock:arn:…/abc123 → be
 - IAM: `ssm:GetParameter` on the parameter, plus `kms:Decrypt` for a SecureString with a customer-managed key.
 - `CONVO_DEFAULT_MODEL=ssm:/…` works too, to choose the default model name from Parameter Store.
 
+### Fine-tuning data for Amazon Nova
+
+The conversations the API stores can be exported as **Amazon Nova fine-tuning JSONL**
+(`bedrock-conversation-2024`, for Nova Micro / Lite / Pro on Bedrock), checked against Nova's rules, and
+sent to a Bedrock fine-tuning job:
+
+```bash
+export CONVO_STORE=sqlite                               # keep conversations across restarts while you collect
+convo collect prompts.txt -m nova-pro --dataset support # one prompt per line, or JSONL {prompt, system, followups}
+convo export --where dataset=support --out data/support # train.jsonl + validation.jsonl, with a report
+convo validate-jsonl data/support/train.jsonl --validation data/support/validation.jsonl
+bash scripts/bedrock_finetune_nova.sh data/support/train.jsonl data/support/validation.jsonl
+bash scripts/bedrock_finetune_nova.sh status convo-nova-<timestamp>
+```
+
+```json
+{"schemaVersion":"bedrock-conversation-2024","system":[{"text":"Be concise."}],
+ "messages":[{"role":"user","content":[{"text":"I want a refund"}]},
+             {"role":"assistant","content":[{"text":"…"}]}]}
+```
+
+| Step | What is enforced or done |
+|---|---|
+| Nova's rules | first message `user`, last `assistant`, roles alternate, non-empty text; 8–20,000 training samples (warns under 100); 32,000 max content length; the reserved keywords `User:` `Bot:` `Assistant:` `System:` `<image>` `<video>` `[EOS]` in user/system text are rewritten (`User -`) or, with `--drop-reserved`, the sample is dropped |
+| Selection | `--where dataset=…` (metadata), `--model` (only replies from given catalog names / model IDs, so swapped or fallback replies can be excluded), `--since`, `--min-turns`; conversations created with `metadata: {"training": false}` are never exported |
+| Cleaning | dedup; emails, AWS access key IDs and card numbers redacted by default (`--no-redact` to keep) |
+| Shape | `--mode conversation` (one sample per conversation) or `--mode turns` (one per reply, with its history) |
+| Split | deterministic train/validation split by `--seed`; never takes the training set below 8 |
+| Job | `scripts/bedrock_finetune_nova.sh`: checks the base model is fine-tunable in the region, private S3 bucket (public access blocked), an IAM service role trusted only for this account's customization jobs with access to that bucket, then `create-model-customization-job` (epochs, learning rate, warmup from AWS's samples/640·160·320 guidance). `DRY_RUN=1` prints the command. The output tells you how to deploy the custom model on demand and point the API at it (`-m bedrock:<deployment-arn>` or an `ssm:` parameter). |
+
+API: `GET /v1/training/report` and `GET /v1/training/export.jsonl?split=train|validation|all` take the same
+filters as query parameters (`where=dataset=support&validation_split=0.1`).
+
+> Check each model provider's terms before training one provider's model on another provider's outputs.
+> A Nova teacher (e.g. Nova Pro) for a Nova Micro/Lite student keeps it within one provider.
+
 ---
 
 ## Run it in a cloud shell (about 60 seconds)
@@ -143,6 +179,8 @@ platform IAM layer and the app key can both be in place at once.
 | `POST /v1/conversations/{id}/messages` | `{content, model?, stream?, max_tokens?, temperature?}` | turn; `model` here applies to **this turn only** |
 | `GET /v1/models` | | catalog with provider, model ID (and `model_source` if read from Parameter Store), aliases, fallbacks, and a local readiness check |
 | `POST /v1/admin/reload-models` | | re-read the catalog and Parameter Store values; returns what changed (503 and no change on failure) |
+| `GET /v1/training/report` | query filters | what an export would contain and whether Nova would accept it |
+| `GET /v1/training/export.jsonl` | query filters + `split` | Amazon Nova fine-tuning JSONL |
 | `GET /healthz` | | liveness, default model, store (no auth, for probes) |
 
 A **turn** response:
@@ -260,7 +298,7 @@ startup: unknown providers, aliases pointing nowhere, missing fallbacks and a ba
 ```bash
 make install     # pip install -e ".[dev]"
 make lint        # ruff + mypy
-make test        # 80 offline tests, no cloud credentials needed (Parameter Store is simulated with moto)
+make test        # 101 offline tests, no cloud credentials needed (Parameter Store is simulated with moto)
 make run         # API on 127.0.0.1:8080
 ```
 
@@ -272,7 +310,8 @@ concurrent turns; auth; the SQLite store across restarts; Parameter Store refere
 SecureString, env-var indirection, ARN regions, fail-fast on a missing parameter, live reload, failed reload
 keeping the last good catalog, periodic refresh); Bedrock adaptive retry config and shared clients, the
 ThrottlingException → smaller-model fallback (Converse and ConverseStream, before and after the first
-token); and each provider adapter's request mapping,
+token); Nova fine-tuning export (schema, Nova's rules, filters, reserved keywords, redaction, dedup, split,
+limits, API and the collect → export → validate CLI flow); and each provider adapter's request mapping,
 response parsing and error classification against fake SDK clients. CI runs it on Python 3.10 and 3.12 and
 then drives the CLI and the curl client against a live server.
 
@@ -285,11 +324,14 @@ src/conversation_api/
   service.py                    turns, swap, fallback, history fitting, per-conversation locks
   registry.py                   catalog loading, env interpolation, validation, name resolution, reload diff
   parameters.py                 ssm: references → AWS Systems Manager Parameter Store
+  training.py                   Amazon Nova fine-tuning JSONL: build, validate, redact, split
   store.py                      memory (LRU) and SQLite stores behind one interface
   providers/                    base contract + bedrock, anthropic, openai_compat, gemini, mock
-  cli.py                        `convo`: serve, models, ask, say, swap, reload, chat, history, list, rm
+  cli.py                        `convo`: serve, models, ask, say, swap, reload, chat, history, list, rm,
+                                collect, export, validate-jsonl
 scripts/cloudshell_quickstart.sh  detect cloud shell → install → run → smoke test
 scripts/convo.sh                curl-only client
+scripts/bedrock_finetune_nova.sh  S3 upload + IAM role + Bedrock fine-tuning job for Nova
 deploy/                         Cloud Run and Azure Container Apps
 docs/adr/                       design records
 ```

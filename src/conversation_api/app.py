@@ -11,10 +11,12 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from pydantic import ValidationError
 
 from . import __version__
 from .config import Settings, get_settings
@@ -32,6 +34,7 @@ from .schemas import (
 )
 from .service import ConversationNotFound, ConversationService, TurnFailed
 from .store import ConversationStore, MemoryStore, SqliteStore
+from .training import MAX_CONTENT_CHARS, Dataset, ExportOptions, build_dataset, to_jsonl
 
 log = logging.getLogger("conversation_api")
 
@@ -66,6 +69,45 @@ def build_store(settings: Settings) -> ConversationStore:
     if settings.store == "sqlite":
         return SqliteStore(settings.sqlite_path)
     return MemoryStore(settings.max_conversations)
+
+
+def export_options(
+    mode: Literal["conversation", "turns"] = Query("conversation"),
+    model: list[str] = Query(default=[], description="catalog name or model ID; repeat or comma-separate"),
+    min_turns: int = Query(1, ge=1),
+    since: datetime | None = Query(None),
+    where: list[str] = Query(default=[], description="metadata filter key=value; repeatable"),
+    system: str | None = Query(None, description="system prompt for every sample"),
+    validation_split: float = Query(0.1, ge=0, le=0.5),
+    seed: int = Query(42),
+    redact: bool = Query(True),
+    fix_reserved: bool = Query(True),
+    max_chars: int = Query(MAX_CONTENT_CHARS, gt=0),
+) -> ExportOptions:
+    filters: dict[str, str] = {}
+    for item in where:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise HTTPException(
+                422, {"code": "bad_filter", "message": f"where must be key=value, got {item!r}"}
+            )
+        filters[key] = value
+    try:
+        return ExportOptions(
+            mode=mode,
+            models=[m for item in model for m in item.split(",") if m],
+            min_turns=min_turns,
+            since=since,
+            where=filters,
+            system=system,
+            validation_split=validation_split,
+            seed=seed,
+            redact=redact,
+            fix_reserved=fix_reserved,
+            max_chars=max_chars,
+        )
+    except ValidationError as exc:
+        raise HTTPException(422, {"code": "bad_export_options", "message": str(exc)}) from exc
 
 
 def load_registry(settings: Settings) -> ModelRegistry:
@@ -256,6 +298,43 @@ def create_app(
     @app.get("/v1/models", response_model=list[ModelInfo], dependencies=v1, tags=["models"])
     async def list_models() -> list[ModelInfo]:
         return svc().list_models()
+
+    async def dataset(opts: ExportOptions) -> Dataset:
+        return build_dataset(await svc().store.list(limit=1_000_000), opts)
+
+    @app.get("/v1/training/report", dependencies=v1, tags=["training"])
+    async def training_report(opts: ExportOptions = Depends(export_options)) -> dict[str, Any]:
+        """What an export with these options would contain, and whether Nova would accept it."""
+        report = (await dataset(opts)).report
+        return report.model_dump() | {"ready": report.ready}
+
+    @app.get(
+        "/v1/training/export.jsonl",
+        dependencies=v1,
+        tags=["training"],
+        responses={200: {"content": {"application/jsonl": {}}}},
+    )
+    async def training_export(
+        split: Literal["train", "validation", "all"] = Query("train"),
+        opts: ExportOptions = Depends(export_options),
+    ) -> PlainTextResponse:
+        """Amazon Nova fine-tuning JSONL (bedrock-conversation-2024). The split is deterministic for a given
+        seed, so fetching train and validation separately gives disjoint sets."""
+        data = await dataset(opts)
+        records = {"train": data.train, "validation": data.validation, "all": data.train + data.validation}[
+            split
+        ]
+        r = data.report
+        return PlainTextResponse(
+            to_jsonl(records),
+            media_type="application/jsonl",
+            headers={
+                "X-Samples": str(len(records)),
+                "X-Train": str(r.train),
+                "X-Validation": str(r.validation),
+                "X-Ready": str(r.ready).lower(),
+            },
+        )
 
     @app.post("/v1/admin/reload-models", response_model=ReloadResult, dependencies=v1, tags=["models"])
     async def reload_models() -> Any:

@@ -6,6 +6,11 @@
   convo say <id> "follow-up"          continue a conversation
   convo swap <id> gpt                 change the model for later turns (history is kept)
   convo reload                        re-read models.yaml + Parameter Store values without a restart
+
+Fine-tuning data (Amazon Nova, bedrock-conversation-2024 JSONL):
+  convo collect prompts.txt -m fast --dataset support    run prompts through a model, store the conversations
+  convo export --where dataset=support --out data/nova   write train.jsonl + validation.jsonl, with checks
+  convo validate-jsonl data/nova/train.jsonl --validation data/nova/validation.jsonl   offline check
   convo chat -m fast                  interactive; type /help inside
 
 Environment: CONVO_URL (default http://127.0.0.1:8080), CONVO_API_KEY, and CONVO_BEARER_TOKEN for a
@@ -66,6 +71,12 @@ class Client:
 
     def patch(self, path: str, body: dict[str, Any]) -> Any:
         return self._check(self.http.patch(path, json=body))
+
+    def get_text(self, path: str, params: Any = None) -> tuple[str, httpx.Headers]:
+        r = self.http.get(path, params=params)
+        if r.status_code >= 400:
+            self._check(r)
+        return r.text, r.headers
 
     def delete(self, path: str) -> Any:
         return self._check(self.http.delete(path))
@@ -297,6 +308,140 @@ def cmd_chat(client: Client, args: argparse.Namespace) -> None:
             print(_c(RED, f"error: {exc}"), file=sys.stderr)
 
 
+# ---- fine-tuning data ----------------------------------------------------------------------------------
+def export_params(args: argparse.Namespace) -> list[tuple[str, str]]:
+    params: list[tuple[str, str]] = [
+        ("mode", args.mode),
+        ("min_turns", str(args.min_turns)),
+        ("validation_split", str(args.validation_split)),
+        ("seed", str(args.seed)),
+        ("redact", str(not args.no_redact).lower()),
+        ("fix_reserved", str(not args.drop_reserved).lower()),
+    ]
+    params += [("model", m) for m in args.model or []]
+    params += [("where", w) for w in args.where or []]
+    if args.since:
+        params.append(("since", args.since))
+    if args.system is not None:
+        params.append(("system", args.system))
+    return params
+
+
+def print_report(r: dict[str, Any]) -> None:
+    print(
+        f"conversations: {r['conversations_used']} used of {r['conversations_scanned']} · samples: {r['samples']} "
+        f"(train {r['train']}, validation {r['validation']})"
+    )
+    for reason, n in sorted(r["dropped"].items(), key=lambda kv: -kv[1]):
+        print(_c(DIM, f"  skipped {n}: {reason}"))
+    if r["reserved_rewritten"]:
+        print(
+            _c(DIM, f"  rewrote reserved keywords (User:, System:, ...) in {r['reserved_rewritten']} samples")
+        )
+    if r["redactions"]:
+        print(_c(DIM, f"  redacted {r['redactions']} emails / keys / card numbers"))
+    for w in r["warnings"]:
+        print(_c(YELLOW, f"  warning: {w}"))
+    for e in r["errors"]:
+        print(_c(RED, f"  error: {e}"))
+
+
+def cmd_export(client: Client, args: argparse.Namespace) -> None:
+    import pathlib
+
+    params = export_params(args)
+    report = client.get("/v1/training/report", params=params)
+    print_report(report)
+    if not report["ready"] and not args.force:
+        raise ApiError("dataset not ready for Nova fine-tuning (see errors above; --force writes it anyway)")
+    out = pathlib.Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    written = []
+    for split in ("train", "validation"):
+        text, _ = client.get_text("/v1/training/export.jsonl", params=[*params, ("split", split)])
+        if text:
+            path = out / f"{split}.jsonl"
+            path.write_text(text, encoding="utf-8")
+            written.append(path)
+            print(f"wrote {path} ({text.count(chr(10))} samples)")
+    if written:
+        files = " ".join(str(p) for p in written)
+        print(_c(DIM, f"next: bash scripts/bedrock_finetune_nova.sh {files}"))
+
+
+def cmd_validate_jsonl(args: argparse.Namespace) -> None:
+    from .training import validate_jsonl
+
+    failed = False
+    files = [(n, True) for n in args.files] + [(n, False) for n in args.validation or []]
+    for name, is_training in files:
+        with open(name, encoding="utf-8") as f:
+            valid, problems = validate_jsonl(f.read(), check_counts=is_training)
+        status = _c(RED, "problems") if problems else "ok"
+        print(f"{name}: {valid} valid samples · {status}")
+        for p in problems[:20]:
+            print(_c(DIM, f"  {p}"))
+        if len(problems) > 20:
+            print(_c(DIM, f"  ... and {len(problems) - 20} more"))
+        failed = failed or bool(problems)
+    if failed:
+        sys.exit(1)
+
+
+def read_prompts(path: str) -> list[dict[str, Any]]:
+    """Plain text (one prompt per line, # comments) or JSONL ({"prompt", "system"?, "followups"?: [...]})."""
+    items: list[dict[str, Any]] = []
+    with open(path, encoding="utf-8") as f:
+        for n, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("{"):
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ApiError(f"{path} line {n}: invalid JSON ({exc.msg})") from exc
+                if not isinstance(obj.get("prompt"), str) or not obj["prompt"].strip():
+                    raise ApiError(f'{path} line {n}: needs a non-empty "prompt"')
+                items.append(obj)
+            else:
+                items.append({"prompt": line})
+    return items
+
+
+def cmd_collect(client: Client, args: argparse.Namespace) -> None:
+    import pathlib
+
+    items = read_prompts(args.file)
+    dataset = args.dataset or pathlib.Path(args.file).stem
+    ok = 0
+    for i, item in enumerate(items, start=1):
+        label = f"[{i}/{len(items)}]"
+        try:
+            conv = client.post(
+                "/v1/conversations",
+                {
+                    "model": args.model,
+                    "system": item.get("system", args.system),
+                    "metadata": {"dataset": dataset, "source": "collect"},
+                },
+            )
+            for text in [item["prompt"], *item.get("followups", [])]:
+                turn = client.post(
+                    f"/v1/conversations/{conv['id']}/messages",
+                    {"content": text, "max_tokens": args.max_tokens},
+                )
+            used = turn["model_used"]
+            print(f"{label} ok · {used['name']} ({used['model_id']}) · {turn['latency_ms'] / 1000:.1f}s")
+            ok += 1
+        except ApiError as exc:
+            print(_c(RED, f"{label} failed: {exc}"), file=sys.stderr)
+    print(f"collected {ok}/{len(items)} conversations into dataset {dataset!r}")
+    print(_c(DIM, f"next: convo export --where dataset={dataset} --out data/{dataset}"))
+    if ok == 0 and items:
+        sys.exit(1)
+
+
 def cmd_serve(args: argparse.Namespace) -> None:
     from .app import run
 
@@ -352,6 +497,42 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("rm", help="delete a conversation")
     s.add_argument("id")
 
+    s = sub.add_parser("collect", help="run prompts from a file through a model and store the conversations")
+    s.add_argument("file", help="text (one prompt per line) or JSONL with prompt / system / followups")
+    s.add_argument("-m", "--model")
+    s.add_argument("-s", "--system")
+    s.add_argument("--dataset", help="metadata tag for export filtering (default: file name)")
+    s.add_argument("--max-tokens", type=int)
+
+    s = sub.add_parser("export", help="write Amazon Nova fine-tuning JSONL from stored conversations")
+    s.add_argument("--out", default="data/nova", help="directory for train.jsonl / validation.jsonl")
+    s.add_argument(
+        "--mode",
+        choices=["conversation", "turns"],
+        default="conversation",
+        help="one sample per conversation, or one per assistant reply",
+    )
+    s.add_argument(
+        "--model", action="append", help="only replies from this catalog name / model ID (repeatable)"
+    )
+    s.add_argument("--where", action="append", help="metadata filter key=value (repeatable)")
+    s.add_argument("--min-turns", type=int, default=1)
+    s.add_argument("--since", help="ISO date/time, e.g. 2026-11-01")
+    s.add_argument("--system", help="system prompt for every sample (default: each conversation's own)")
+    s.add_argument("--validation-split", type=float, default=0.1)
+    s.add_argument("--seed", type=int, default=42)
+    s.add_argument("--no-redact", action="store_true", help="keep emails / AWS keys / card numbers")
+    s.add_argument(
+        "--drop-reserved",
+        action="store_true",
+        help="drop samples with reserved keywords instead of rewriting them",
+    )
+    s.add_argument("--force", action="store_true", help="write files even if the dataset is not ready")
+
+    s = sub.add_parser("validate-jsonl", help="check JSONL files against Nova's fine-tuning rules (offline)")
+    s.add_argument("files", nargs="+", help="training files (also checked for the 8..20,000 sample limits)")
+    s.add_argument("--validation", action="append", help="validation file (format rules only; repeatable)")
+
     s = sub.add_parser("chat", help="interactive chat")
     s.add_argument("-m", "--model")
     s.add_argument("-s", "--system")
@@ -364,6 +545,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "serve":
         cmd_serve(args)
         return
+    if args.command == "validate-jsonl":
+        cmd_validate_jsonl(args)
+        return
     client = Client(args.url, args.api_key, args.bearer)
     handlers = {
         "models": cmd_models,
@@ -375,6 +559,8 @@ def main(argv: list[str] | None = None) -> None:
         "list": cmd_list,
         "rm": cmd_rm,
         "chat": cmd_chat,
+        "collect": cmd_collect,
+        "export": cmd_export,
     }
     try:
         handlers[args.command](client, args)
