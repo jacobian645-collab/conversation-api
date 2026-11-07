@@ -4,7 +4,7 @@
 One HTTP contract in front of **Amazon Bedrock, Anthropic, OpenAI, Azure OpenAI, Gemini (API or Vertex AI)
 and Ollama**. You can swap the model **for one turn, for one conversation, or for every caller at once**,
 and the conversation history carries over. It is built to be called from **AWS CloudShell, Azure Cloud Shell
-or Google Cloud Shell** with nothing more than `curl`.
+or Google Cloud Shell** with nothing more than `curl`, and it ships a browser chat UI at `/ui`.
 
 > © 2026 Tanmay Roy · Proprietary, view-only (see [LICENSE](LICENSE)).
 
@@ -165,10 +165,99 @@ convo chat -m fast                   # interactive; /model <name> swaps mid-chat
 |---|---|---|
 | **Cloud Run** (private) | [`deploy/gcp_cloud_run.sh`](deploy/gcp_cloud_run.sh): dedicated service account with `aiplatform.user`, API key in Secret Manager, `--no-allow-unauthenticated` | `CONVO_BEARER_TOKEN=$(gcloud auth print-identity-token)` + `CONVO_API_KEY` |
 | **Azure Container Apps** | [`deploy/azure_container_apps.sh`](deploy/azure_container_apps.sh): built in ACR from source, managed identity with *Cognitive Services OpenAI User*, API key as a Container Apps secret | `CONVO_URL=https://<fqdn>` + `CONVO_API_KEY` |
-| **AWS** | the same [Dockerfile](Dockerfile) runs on ECS Fargate; give the task role `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` | `CONVO_URL` + `CONVO_API_KEY` |
+| **AWS** (ECS Express Mode) | [`deploy/aws_ecs_express.sh`](deploy/aws_ecs_express.sh): Fargate behind an HTTPS load balancer, task role with `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream`, API key in Parameter Store; optional chat page on Amplify ([below](#host-it-on-aws-amplify-for-the-page-ecs-express-mode-for-the-api)) | `CONVO_URL` (the script prints it) + `CONVO_API_KEY=$(./deploy/aws_ecs_express.sh key)` |
 
 The CLI sends the app key as `X-API-Key` and the platform token as `Authorization: Bearer`, so a
 platform IAM layer and the app key can both be in place at once.
+
+### Chat in the browser
+
+`convo serve` also serves a chat UI at **`/ui`** (`/` redirects there). It is one static page that calls the
+same `/v1` endpoints as the CLI, so it shows exactly what the API does:
+
+![Chat UI: a coloured rail shows which model wrote each reply, with switch markers where the model was swapped](docs/img/chat-ui.png)
+
+- **The rail shows provenance.** Each catalog model gets a colour. Every reply's segment is coloured by the
+  model that actually answered, and a switch marker sits wherever the conversation's model was swapped.
+- **Swap at both scopes.** The model menu in the header swaps the conversation (`PATCH`, sticky). *Reply with*
+  under the message box overrides one reply only (`model` on the message). Replies that came from an override
+  or a fallback are tagged.
+- **Fallback in the open.** Streaming `fallback` events appear as they happen; a reply that fell back says
+  which model couldn't answer and lists each failed attempt. When the whole chain fails, the turn is shown
+  as not saved, with *Try again* and *Edit message*.
+- **Per reply:** model name and model ID, tokens in and out, latency, and the cost estimate when the catalog
+  has prices. Stop (or Esc) cancels a streaming reply.
+- **Settings:** system prompt (per conversation, `PATCH`), temperature, max tokens, streaming on or off,
+  and *Reload model catalog*. The catalog view on a new conversation shows which models are ready here.
+- **Auth:** the page itself needs no key. When `/v1` answers 401 it asks for `CONVO_API_KEY` and sends it as
+  `X-API-Key`, kept for the tab or, if you tick *Remember*, on that device.
+- **Locked down:** the page is served with a Content-Security-Policy that allows only its own inline script
+  (pinned by SHA-256), calls only to the same origin, and no framing. Model output is escaped before the
+  small built-in Markdown renderer runs. No build step, no npm, and no JavaScript dependencies.
+  Conversations it creates carry `metadata.source = "web-ui"`, so `convo export --where source=web-ui` can
+  select them for fine-tuning.
+
+Where to open it:
+
+| Where the server runs | Open |
+|---|---|
+| Your laptop (`convo serve`) | http://127.0.0.1:8080/ui |
+| Google Cloud Shell | **Web Preview → Preview on port 8080** (lands on `/ui`) |
+| Azure Cloud Shell | **Web preview → Configure → 8080** (lands on `/ui`) |
+| AWS CloudShell | no browser preview there: run `convo serve` on your laptop with the same AWS credentials, or open `/ui` on a deployed instance |
+| Cloud Run (private) | `gcloud run services proxy conversation-api --region <region>` then http://localhost:8080/ui (the proxy adds the identity token) |
+| Azure Container Apps / ECS | `https://<host>/ui` |
+| AWS Amplify Hosting | the page on its own domain, calling the API cross-origin: see below |
+
+Set `CONVO_UI=false` to serve the API only.
+
+### Host it on AWS: Amplify for the page, ECS Express Mode for the API
+
+```text
+ browser ──▶ https://main.<app-id>.amplifyapp.com     AWS Amplify Hosting: the chat page (static, from GitHub)
+    │
+    └──────▶ https://conversation-api.ecs.<region>.on.aws   ECS Express Mode: Fargate task behind an HTTPS ALB
+                 X-API-Key, CORS for the Amplify origin             └─▶ Amazon Bedrock (task role), Parameter Store
+```
+
+Amplify Hosting serves static sites, so it hosts the page and the API runs on
+[Amazon ECS Express Mode](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/express-service-overview.html)
+(AWS's recommended successor to App Runner, which stopped taking new customers on 30 April 2026): one call
+turns the [Dockerfile](Dockerfile) image into a Fargate service with an HTTPS URL, load balancer and scaling.
+
+1. **Push this repo to GitHub.** It carries [`amplify.yml`](amplify.yml) (build: `python3 scripts/build_ui.py`)
+   and [`customHttp.yml`](customHttp.yml) (security headers).
+2. **Create the Amplify app** in the Amplify console: *Create new app → GitHub →* this repository, branch
+   `main`, keep the detected build settings, *Save and deploy*. Copy the app ID (`d1abc2def3` in
+   `https://main.d1abc2def3.amplifyapp.com`). The first build says it isn't connected to an API yet; step 3
+   fixes that.
+3. **Deploy the API from AWS CloudShell** (same region as Bedrock; your `BEDROCK_*` exports are picked up):
+   ```bash
+   git clone https://github.com/jacobian645-collab/conversation-api.git && cd conversation-api   # or git pull
+   AMPLIFY_APP_ID=d1abc2def3 ./deploy/aws_ecs_express.sh
+   ```
+   [`deploy/aws_ecs_express.sh`](deploy/aws_ecs_express.sh) builds and pushes the image to ECR, creates an
+   API key in Parameter Store (SecureString, injected as `CONVO_API_KEY`), creates three IAM roles (image pull
+   and key read; Bedrock invoke and `/conversation-api/*` parameter read; the Express Mode infrastructure
+   role), creates or updates the service with `/healthz` as its health check, waits until the HTTPS endpoint
+   answers, then sets `CONVO_API_URL` on the Amplify app and starts a rebuild. The API allows only the
+   Amplify origin (`CONVO_CORS_ORIGINS`).
+4. **Open** `https://main.<app-id>.amplifyapp.com` and paste the key from `./deploy/aws_ecs_express.sh key`.
+
+`status` shows the URL, health and the Amplify setting; rerunning the script redeploys (rolling) and keeps
+the service's model settings; `destroy` deletes the service and its load balancer. Use `EXTRA_ORIGINS` for a
+custom domain, and `SKIP_BUILD=1` to reuse an image you pushed from elsewhere.
+
+**Cost:** the API is always on. At the script's size (0.5 vCPU, 1 GB, one task) in us-east-1 expect roughly
+**$45 a month** before Bedrock usage: about $18 Fargate, $16 load balancer, $11 public IPv4 addresses, a little
+for logs and ECR. Express Mode shares one load balancer across services with the same network settings.
+Amplify Hosting for one small page costs cents. `destroy` stops the running cost.
+
+**Limits of this setup:** one task, because conversations live in that task's memory: a redeploy or task
+replacement starts with no history, and a second task would split conversations between tasks. Making it
+stateless means a shared store ([ADR-0002](docs/adr/0002-conversation-state.md)). By default the load balancer
+closes a connection after 60 seconds with no bytes; streamed replies send tokens continuously, but a very long
+non-streamed reply can hit it.
 
 ---
 
@@ -283,6 +372,8 @@ credentials use each SDK's standard variables.
 | `CONVO_API_KEY` | unset | when set, required on every `/v1` call (`X-API-Key` or `Authorization: Bearer`) |
 | `CONVO_DEFAULT_MODEL` | `mock` | catalog name or alias used when a request names none |
 | `CONVO_HOST` / `CONVO_PORT` | `127.0.0.1` / `8080` | `PORT` is honoured for Cloud Run and Container Apps |
+| `CONVO_UI` | `true` | serve the browser chat UI at `/ui` (and redirect `/` to it) |
+| `CONVO_CORS_ORIGINS` | unset | browser origins allowed to call the API, comma-separated (e.g. the Amplify URL of the chat page) |
 | `CONVO_STORE` | `memory` | `sqlite` keeps conversations across restarts (`CONVO_SQLITE_PATH`) |
 | `CONVO_ALLOW_ADHOC_MODELS` | `true` | allow `provider:model-id` names outside the catalog |
 | `CONVO_MODELS_FILE` | `config/models.yaml` | the catalog |
@@ -304,7 +395,7 @@ startup: unknown providers, aliases pointing nowhere, missing fallbacks and a ba
 ```bash
 make install     # pip install -e ".[dev]"
 make lint        # ruff + mypy
-make test        # 104 offline tests, no cloud credentials needed (Parameter Store is simulated with moto)
+make test        # 116 offline tests, no cloud credentials needed (Parameter Store is simulated with moto)
 make run         # API on 127.0.0.1:8080
 ```
 
@@ -312,7 +403,7 @@ The suite runs with no network or credentials. It covers model resolution and ca
 mid-conversation (the next model receives the earlier model's turns); per-turn overrides; fallback on
 retryable and unavailable errors and no fallback on invalid requests; atomic turns; history trimming;
 streaming fallback before the first token and discarding a stream that fails after it; serialised
-concurrent turns; auth; the SQLite store across restarts; Parameter Store references (String and
+concurrent turns; auth; the chat UI route and its security headers, CORS for a separately hosted page and the static build; the SQLite store across restarts; Parameter Store references (String and
 SecureString, env-var indirection, ARN regions, fail-fast on a missing parameter, live reload, failed reload
 keeping the last good catalog, periodic refresh); Bedrock adaptive retry config and shared clients, the
 ThrottlingException → smaller-model fallback (Converse and ConverseStream, before and after the first
@@ -326,7 +417,9 @@ then drives the CLI and the curl client against a live server.
 ```text
 config/models.yaml              model catalog: providers, aliases, fallbacks, prices
 src/conversation_api/
-  app.py                        FastAPI routes, SSE, auth, structured errors, JSON logs
+  app.py                        FastAPI routes, SSE, auth, structured errors, JSON logs, /ui
+  ui/index.html                 browser chat UI: one static page, no build step
+  ui/__init__.py                its CSP and the static-site variant (stdlib only)
   service.py                    turns, swap, fallback, history fitting, per-conversation locks
   registry.py                   catalog loading, env interpolation, validation, name resolution, reload diff
   parameters.py                 ssm: references → AWS Systems Manager Parameter Store
@@ -338,7 +431,8 @@ src/conversation_api/
 scripts/cloudshell_quickstart.sh  detect cloud shell → install → run → smoke test
 scripts/convo.sh                curl-only client
 scripts/bedrock_finetune_nova.sh  S3 upload + IAM role + Bedrock fine-tuning job for Nova
-deploy/                         Cloud Run and Azure Container Apps
+deploy/                         Cloud Run, Azure Container Apps, AWS ECS Express Mode
+scripts/build_ui.py             chat UI as a static site (Amplify); amplify.yml, customHttp.yml at the root
 docs/adr/                       design records
 ```
 

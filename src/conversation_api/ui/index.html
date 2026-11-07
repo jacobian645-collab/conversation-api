@@ -1,0 +1,1206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Conversation API</title>
+<meta name="description" content="Chat with any model in the catalog, swap models mid-conversation, and see which model wrote every reply.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d2b3a'/%3E%3Cpath d='M11 6v20' stroke='%234f8cf0' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M11 15c0-4 10-3 10-8M21 26v-8' stroke='%2333b3a6' stroke-width='3' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #e9edf2;
+  --panel: #f5f7fa;
+  --surface: #ffffff;
+  --ink: #1d2b3a;
+  --ink-2: #4b5b6c;
+  --ink-3: #7a8897;
+  --line: #d3dae2;
+  --line-2: #e4e9ef;
+  --user: #dfe7f1;
+  --signal: #2f64d6;
+  --signal-ink: #ffffff;
+  --danger: #b4233c;
+  --danger-bg: #fbe9ec;
+  --warn: #8a5a00;
+  --warn-bg: #fdf3dc;
+  --ok: #1f7a4d;
+  --focus: #2f64d6;
+  --shadow: 0 1px 2px rgba(29, 43, 58, .06), 0 8px 24px rgba(29, 43, 58, .08);
+  /* model hues: the rail. Assigned by catalog order. */
+  --m0: #2f64d6; --m1: #0f8a80; --m2: #7a4fd0; --m3: #b06d00;
+  --m4: #c03a78; --m5: #3b8a2e; --m6: #1f84b5; --m7: #a8452c;
+  --m-x: #8a96a3;
+  --sans: "Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #10161d; --panel: #151d26; --surface: #1b2530; --ink: #e3e9ef; --ink-2: #a9b6c3; --ink-3: #7c8a98;
+    --line: #2b3744; --line-2: #222d38; --user: #233244; --signal: #5b8ef0; --signal-ink: #0c1420;
+    --danger: #f07a8c; --danger-bg: #3a1c24; --warn: #f0c060; --warn-bg: #3a2e14; --ok: #5cc98f; --focus: #7aa5f5;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+    --m0: #6d9bf5; --m1: #3cc2b4; --m2: #a98af0; --m3: #e0a440; --m4: #ec79ad; --m5: #79c46a; --m6: #5ab8e6; --m7: #e48466; --m-x: #7c8a98;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #10161d; --panel: #151d26; --surface: #1b2530; --ink: #e3e9ef; --ink-2: #a9b6c3; --ink-3: #7c8a98;
+  --line: #2b3744; --line-2: #222d38; --user: #233244; --signal: #5b8ef0; --signal-ink: #0c1420;
+  --danger: #f07a8c; --danger-bg: #3a1c24; --warn: #f0c060; --warn-bg: #3a2e14; --ok: #5cc98f; --focus: #7aa5f5;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+  --m0: #6d9bf5; --m1: #3cc2b4; --m2: #a98af0; --m3: #e0a440; --m4: #ec79ad; --m5: #79c46a; --m6: #5ab8e6; --m7: #e48466; --m-x: #7c8a98;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 400 15px/1.55 var(--sans); -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+code, pre, .mono { font-family: var(--mono); font-size: .86em; }
+[hidden] { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---- shell ---------------------------------------------------------------------------------- */
+.app { display: grid; grid-template-columns: 280px 1fr; height: 100dvh; }
+.sidebar {
+  background: var(--panel); border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.brand { padding: 18px 18px 12px; display: flex; align-items: baseline; gap: 8px; }
+.brand h1 { font-size: 16px; font-weight: 700; margin: 0; letter-spacing: -.01em; }
+.brand .ver { color: var(--ink-3); font-size: 12px; }
+.new-btn {
+  margin: 4px 14px 10px; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--surface); text-align: left; font-weight: 600; display: flex; align-items: center; gap: 8px;
+}
+.new-btn:hover { border-color: var(--ink-3); }
+.new-btn svg { flex: none; }
+.convs { list-style: none; margin: 0; padding: 4px 8px 12px; overflow-y: auto; flex: 1; min-height: 0; }
+.convs li { margin: 0; }
+.conv-link {
+  display: grid; grid-template-columns: 4px 1fr; gap: 0 10px; width: 100%; padding: 8px 10px; border: 0;
+  background: none; border-radius: 8px; text-align: left;
+}
+.conv-link:hover { background: var(--line-2); }
+.conv-link[aria-current="true"] { background: var(--surface); box-shadow: var(--shadow); }
+.conv-link .tick { grid-row: span 2; border-radius: 2px; background: var(--m, var(--m-x)); }
+.conv-link .title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-link .sub { font-size: 12px; color: var(--ink-3); display: flex; gap: 10px; white-space: nowrap; overflow: hidden; }
+.convs .empty { color: var(--ink-3); font-size: 13px; padding: 10px 12px; }
+.side-foot {
+  border-top: 1px solid var(--line); padding: 10px 14px 14px; font-size: 12px; color: var(--ink-3);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.side-foot .row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.link-btn { border: 0; background: none; padding: 2px 0; color: var(--ink-2); text-decoration: underline; text-underline-offset: 2px; font-size: 12px; }
+.link-btn:hover { color: var(--ink); }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
+.dot.off { background: var(--danger); }
+
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.topbar {
+  display: flex; align-items: center; gap: 12px; padding: 10px 20px; border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); min-height: 58px;
+}
+.topbar h2 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.icon-btn {
+  width: 36px; height: 36px; border-radius: 8px; border: 1px solid transparent; background: none;
+  display: inline-grid; place-items: center; color: var(--ink-2); flex: none;
+}
+.icon-btn:hover { background: var(--line-2); color: var(--ink); }
+.icon-btn.armed { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); width: auto; padding: 0 10px; font-size: 13px; font-weight: 600; }
+.menu-btn { display: none; }
+
+.model-pick { display: flex; align-items: center; gap: 8px; }
+.model-pick label { font-size: 12px; color: var(--ink-3); }
+.select {
+  appearance: none; -webkit-appearance: none; border: 1px solid var(--line); background: var(--surface);
+  border-radius: 8px; padding: 6px 30px 6px 10px; font-size: 14px; max-width: 240px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%237a8897' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+}
+.select:hover { border-color: var(--ink-3); }
+.swatch { width: 12px; height: 12px; border-radius: 3px; background: var(--m, var(--m-x)); flex: none; }
+
+/* ---- transcript + rail ----------------------------------------------------------------------- */
+.scroller { flex: 1; overflow-y: auto; min-height: 0; scroll-behavior: smooth; }
+.transcript { max-width: 820px; margin: 0 auto; padding: 28px 24px 24px; }
+.turn { display: grid; grid-template-columns: 32px 1fr; position: relative; }
+.rail { position: relative; }
+.rail::before {  /* the continuous track */
+  content: ""; position: absolute; left: 15px; top: 0; bottom: 0; width: 2px; background: var(--line);
+}
+.turn:first-child .rail::before { top: 14px; }
+.turn:last-child .rail::before { bottom: auto; height: 22px; }
+.turn.assistant .rail .seg {
+  position: absolute; left: 13px; top: 6px; bottom: 6px; width: 6px; border-radius: 3px; background: var(--m, var(--m-x));
+}
+.turn.assistant .rail .seg::after {  /* station marker at the start of each reply */
+  content: ""; position: absolute; left: -4px; top: 0; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--bg); border: 3px solid var(--m, var(--m-x)); box-sizing: border-box;
+}
+.turn.user .rail .seg {
+  position: absolute; left: 12px; top: 13px; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3);
+}
+.turn .body { padding: 6px 0 22px 10px; min-width: 0; }
+
+.turn.user .body { display: flex; justify-content: flex-end; }
+.bubble {
+  background: var(--user); border-radius: 14px 14px 4px 14px; padding: 10px 14px; max-width: min(620px, 88%);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.turn.user.failed .bubble { outline: 1px dashed var(--danger); background: var(--danger-bg); }
+
+.who { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0 0 4px; }
+.who .name { font-weight: 650; font-size: 14px; color: var(--m, var(--ink)); }
+.who .mid { color: var(--ink-3); font-size: 12px; overflow-wrap: anywhere; }
+.who .tag { font-size: 12px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; }
+
+.meta { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; color: var(--ink-3); margin-top: 8px; align-items: center; }
+.meta button { border: 0; background: none; padding: 0; color: var(--ink-3); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
+.meta button:hover { color: var(--ink); }
+
+.note {
+  margin-top: 10px; font-size: 13px; border-radius: 8px; padding: 8px 12px; background: var(--warn-bg); color: var(--ink);
+  border-left: 3px solid var(--warn);
+}
+.note.err { background: var(--danger-bg); border-left-color: var(--danger); }
+.note.err strong { color: var(--danger); }
+.note details { margin-top: 4px; }
+.note summary { cursor: pointer; color: var(--ink-2); }
+.note ul { margin: 6px 0 0; padding-left: 18px; }
+.note li { margin: 2px 0; overflow-wrap: anywhere; }
+.note .actions { margin-top: 8px; display: flex; gap: 8px; }
+
+.turn.swap .rail .seg {  /* points switch: old colour above, new below */
+  position: absolute; left: 7px; top: 8px; width: 18px; height: 18px; border-radius: 50%;
+  background: conic-gradient(var(--from) 0 50%, var(--to) 50% 100%); transform: rotate(-90deg);
+  box-shadow: 0 0 0 3px var(--bg);
+}
+.turn.swap .body { padding: 8px 0 18px 10px; font-size: 13px; color: var(--ink-2); }
+.turn.swap .body b { font-weight: 600; color: var(--to); }
+
+/* markdown */
+.md { overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md blockquote, .md pre, .md table { margin: 0 0 .75em; }
+.md h3, .md h4, .md h5 { margin: 1em 0 .4em; line-height: 1.3; }
+.md h3 { font-size: 1.12em; } .md h4 { font-size: 1.02em; } .md h5 { font-size: .95em; }
+.md ul, .md ol { padding-left: 1.4em; }
+.md li { margin: .2em 0; }
+.md a { color: var(--signal); }
+.md blockquote { border-left: 3px solid var(--line); padding-left: 12px; color: var(--ink-2); }
+.md code { background: var(--line-2); padding: .1em .35em; border-radius: 4px; }
+.md pre { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+.md pre code { background: none; padding: 0; font-size: 13px; line-height: 1.5; white-space: pre; }
+.md pre .copy { position: absolute; top: 6px; right: 6px; font-size: 12px; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 2px 8px; color: var(--ink-2); opacity: 0; }
+.md pre:hover .copy, .md pre .copy:focus-visible { opacity: 1; }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 14px; }
+.md th, .md td { border: 1px solid var(--line); padding: 5px 10px; text-align: left; vertical-align: top; }
+.md th { background: var(--panel); font-weight: 600; }
+.caret::after { content: ""; display: inline-block; width: .5em; height: 1.05em; margin-left: 2px; vertical-align: -2px; background: var(--m, var(--ink)); animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.thinking { color: var(--ink-3); font-size: 14px; }
+
+/* empty state */
+.welcome { max-width: 720px; margin: 0 auto; padding: 48px 24px 24px; }
+.welcome h3 { font-size: 26px; line-height: 1.2; font-weight: 700; letter-spacing: -.02em; margin: 0 0 10px; }
+.welcome p { color: var(--ink-2); margin: 0 0 24px; max-width: 60ch; }
+.catalog { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; }
+.catalog button {
+  display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; width: 100%;
+  text-align: left; border: 0; border-top: 1px solid var(--line-2); background: none; padding: 10px 14px;
+}
+.catalog button:first-child { border-top: 0; }
+.catalog button:hover:not(:disabled) { background: var(--panel); }
+.catalog button:disabled { cursor: default; }
+.catalog button:disabled .cat-name { color: var(--ink-3); }
+.catalog button[aria-pressed="true"] { background: color-mix(in srgb, var(--m) 10%, var(--surface)); }
+.cat-name { font-weight: 600; font-size: 14px; }
+.cat-name small { font-weight: 400; color: var(--ink-3); margin-left: 6px; }
+.cat-desc { grid-column: 2; font-size: 13px; color: var(--ink-2); }
+.cat-status { grid-row: 1 / span 2; grid-column: 3; font-size: 12px; color: var(--ink-3); text-align: right; max-width: 220px; }
+.cat-status.ready { color: var(--ok); }
+.hint { font-size: 13px; color: var(--ink-3); margin-top: 14px; }
+
+/* ---- composer ------------------------------------------------------------------------------- */
+.composer-wrap { padding: 0 24px 18px; }
+.composer {
+  max-width: 820px; margin: 0 auto; background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: var(--shadow); padding: 10px 10px 8px 14px;
+}
+.composer:focus-within { border-color: color-mix(in srgb, var(--focus) 60%, var(--line)); }
+.composer textarea {
+  width: 100%; border: 0; outline: 0; resize: none; background: none; min-height: 26px; max-height: 40vh;
+  line-height: 1.5; padding: 4px 0; display: block;
+}
+.composer-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+.composer-row .spacer { flex: 1; }
+.override { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-3); }
+.override .select { font-size: 13px; padding: 4px 28px 4px 8px; }
+.kbd-hint { font-size: 12px; color: var(--ink-3); }
+.send {
+  border: 0; border-radius: 9px; padding: 8px 16px; background: var(--signal); color: var(--signal-ink); font-weight: 600; font-size: 14px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.send:disabled { opacity: .45; cursor: not-allowed; }
+.send.stop { background: var(--ink); color: var(--surface); }
+
+/* ---- settings drawer + key dialog ------------------------------------------------------------ */
+.drawer {
+  position: fixed; inset: 0 0 0 auto; width: min(400px, 100vw); background: var(--surface); border-left: 1px solid var(--line);
+  box-shadow: var(--shadow); transform: translateX(100%); transition: transform .2s ease; z-index: 30;
+  display: flex; flex-direction: column;
+}
+.drawer.open { transform: none; }
+.drawer header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.drawer header h2 { margin: 0; font-size: 16px; }
+.drawer .content { padding: 16px 18px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 22px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > label, .field > .label { font-weight: 600; font-size: 14px; }
+.field .help { font-size: 12px; color: var(--ink-3); margin: 0; }
+.input, .drawer textarea {
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--bg); width: 100%;
+}
+.drawer textarea { min-height: 110px; resize: vertical; line-height: 1.45; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+.btn { border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; background: var(--surface); font-size: 14px; font-weight: 500; }
+.btn:hover { border-color: var(--ink-3); }
+.btn.primary { background: var(--signal); color: var(--signal-ink); border-color: var(--signal); font-weight: 600; }
+.btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.saved { font-size: 12px; color: var(--ok); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13px; margin: 0; }
+.kv dt { color: var(--ink-3); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+.scrim { position: fixed; inset: 0; background: rgba(10, 16, 24, .35); z-index: 20; opacity: 0; pointer-events: none; transition: opacity .2s; }
+.scrim.show { opacity: 1; pointer-events: auto; }
+
+dialog {
+  border: 1px solid var(--line); border-radius: 14px; padding: 22px; width: min(420px, calc(100vw - 32px));
+  background: var(--surface); color: var(--ink); box-shadow: var(--shadow);
+}
+dialog::backdrop { background: rgba(10, 16, 24, .45); }
+dialog h2 { margin: 0 0 6px; font-size: 18px; }
+dialog p { margin: 0 0 16px; color: var(--ink-2); font-size: 14px; }
+dialog .err-line { color: var(--danger); font-size: 13px; min-height: 1.2em; margin: 6px 0 0; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); background: var(--ink); color: var(--surface);
+  padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 40; opacity: 0; transition: opacity .2s; pointer-events: none;
+}
+.toast.show { opacity: 1; }
+
+/* ---- small screens ---------------------------------------------------------------------------- */
+@media (max-width: 860px) {
+  .app { grid-template-columns: 1fr; }
+  .sidebar { position: fixed; inset: 0 auto 0 0; width: min(300px, 86vw); z-index: 30; transform: translateX(-100%); transition: transform .2s ease; box-shadow: var(--shadow); }
+  .sidebar.open { transform: none; }
+  .menu-btn { display: inline-grid; }
+  .topbar { padding: 8px 12px; gap: 6px; }
+  .model-pick label { display: none; }
+  .select { max-width: 150px; }
+  .transcript { padding: 18px 16px 16px; }
+  .turn { grid-template-columns: 26px 1fr; }
+  .rail::before { left: 12px; }
+  .turn.assistant .rail .seg { left: 10px; }
+  .turn.user .rail .seg { left: 9px; }
+  .turn.swap .rail .seg { left: 4px; }
+  .composer-wrap { padding: 0 12px 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  .kbd-hint { display: none; }
+  .welcome { padding: 28px 16px 16px; }
+  .welcome h3 { font-size: 22px; }
+  .cat-status { grid-row: auto; grid-column: 2; text-align: left; max-width: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar" aria-label="Conversations">
+    <div class="brand"><h1>Conversation API</h1><span class="ver" id="ver"></span></div>
+    <button class="new-btn" id="newBtn" type="button">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      New conversation
+    </button>
+    <ul class="convs" id="convs"></ul>
+    <div class="side-foot">
+      <div class="row"><span id="serverLine"><span class="dot"></span>Connecting</span></div>
+      <div class="row">
+        <button class="link-btn" id="themeBtn" type="button">Dark theme</button>
+        <a class="link-btn" id="docsLink" href="/docs" target="_blank" rel="noopener">API docs</a>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <button class="icon-btn menu-btn" id="menuBtn" type="button" aria-label="Show conversations" aria-controls="sidebar" aria-expanded="false">
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M3 5h12M3 9h12M3 13h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+      <h2 id="title">New conversation</h2>
+      <div class="model-pick" id="modelPick">
+        <span class="swatch" id="modelSwatch" aria-hidden="true"></span>
+        <label for="modelSelect">Model</label>
+        <select class="select" id="modelSelect" aria-describedby="modelHelp"></select>
+        <span class="sr-only" id="modelHelp">Changing this switches the model for every later reply. Earlier replies stay as they are.</span>
+      </div>
+      <button class="icon-btn" id="deleteBtn" type="button" aria-label="Delete conversation" hidden>
+        <svg width="17" height="17" viewBox="0 0 17 17" aria-hidden="true"><path d="M3 5h11M7 5V3h3v2M5 5l.7 9h5.6l.7-9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="icon-btn" id="settingsBtn" type="button" aria-label="Settings" aria-controls="drawer" aria-expanded="false">
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M3 5h7M13 5h2M3 13h2M8 13h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="11.5" cy="5" r="1.8" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="6.5" cy="13" r="1.8" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+      </button>
+    </div>
+
+    <div class="scroller" id="scroller">
+      <div id="view"></div>
+    </div>
+
+    <div class="composer-wrap">
+      <form class="composer" id="composer" autocomplete="off">
+        <label class="sr-only" for="input">Message</label>
+        <textarea id="input" rows="1" placeholder="Message the model"></textarea>
+        <div class="composer-row">
+          <div class="override">
+            <label for="overrideSelect">Reply with</label>
+            <select class="select" id="overrideSelect" title="Use a different model for the next reply only"></select>
+          </div>
+          <span class="spacer"></span>
+          <span class="kbd-hint">Enter to send, Shift+Enter for a new line</span>
+          <button class="send" id="sendBtn" type="submit" disabled>Send</button>
+        </div>
+      </form>
+    </div>
+  </main>
+</div>
+
+<div class="scrim" id="scrim"></div>
+
+<aside class="drawer" id="drawer" aria-label="Settings" aria-hidden="true" inert>
+  <header>
+    <h2>Settings</h2>
+    <button class="icon-btn" id="closeDrawer" type="button" aria-label="Close settings">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </header>
+  <div class="content">
+    <div class="field">
+      <label for="systemInput">System prompt</label>
+      <p class="help" id="systemHelp">Used when the next conversation starts.</p>
+      <textarea id="systemInput" placeholder="You are a concise assistant for…"></textarea>
+      <div class="btn-row"><button class="btn" id="saveSystem" type="button">Save system prompt</button><span class="saved" id="systemSaved" aria-live="polite"></span></div>
+    </div>
+    <div class="field">
+      <span class="label">Reply settings</span>
+      <div class="two">
+        <div class="field"><label for="tempInput" style="font-weight:500;font-size:13px">Temperature</label><input class="input" id="tempInput" type="number" min="0" max="2" step="0.1" placeholder="Model default"></div>
+        <div class="field"><label for="maxInput" style="font-weight:500;font-size:13px">Max tokens</label><input class="input" id="maxInput" type="number" min="1" max="64000" step="1" placeholder="Model default"></div>
+      </div>
+      <label class="check"><input type="checkbox" id="streamInput" checked> Stream replies as they are written</label>
+    </div>
+    <div class="field">
+      <span class="label">API key</span>
+      <p class="help" id="keyHelp"></p>
+      <div class="btn-row"><button class="btn" id="changeKey" type="button">Enter API key</button><button class="btn" id="forgetKey" type="button" hidden>Forget key</button></div>
+    </div>
+    <div class="field">
+      <span class="label">Server</span>
+      <dl class="kv" id="serverInfo"></dl>
+      <div class="btn-row"><button class="btn" id="reloadBtn" type="button">Reload model catalog</button><span class="saved" id="reloadMsg" aria-live="polite"></span></div>
+      <p class="help">Reads config/models.yaml and any Parameter Store values again, without a restart.</p>
+    </div>
+  </div>
+</aside>
+
+<dialog id="keyDialog" aria-labelledby="keyTitle">
+  <form method="dialog" id="keyForm">
+    <h2 id="keyTitle">API key needed</h2>
+    <p>This server asks for an API key. Use the value of <code>CONVO_API_KEY</code> it was started with.</p>
+    <div class="field">
+      <label for="keyInput">API key</label>
+      <input class="input" id="keyInput" type="password" autocomplete="current-password" required>
+      <label class="check"><input type="checkbox" id="keyRemember"> Remember on this device</label>
+      <p class="err-line" id="keyErr" aria-live="assertive"></p>
+    </div>
+    <div class="btn-row" style="justify-content:flex-end;margin-top:8px">
+      <button class="btn" value="cancel" type="button" id="keyCancel">Cancel</button>
+      <button class="btn primary" type="submit" id="keySave">Connect</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status"></div>
+<div class="sr-only" id="announce" aria-live="polite"></div>
+
+<script>
+"use strict";
+(() => {
+  // ---- where the API is ------------------------------------------------------------------------
+  // Served by the API itself: no meta tag, relative paths. Built for a static host (scripts/build_ui.py):
+  // <meta name="convo-api"> carries the API's URL, and an empty value means it hasn't been set yet.
+  const apiMeta = document.querySelector('meta[name="convo-api"]');
+  const STATIC = !!apiMeta;
+  const API = STATIC ? apiMeta.content.trim().replace(/\/+$/, "") : "";
+
+  // ---- small helpers --------------------------------------------------------------------------
+  const $ = (s, r = document) => r.querySelector(s);
+  const h = (tag, attrs = {}, ...kids) => {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v == null || v === false) continue;
+      if (k === "class") el.className = v;
+      else if (k === "style") el.style.cssText = v;
+      else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+      else if (k === "html") el.innerHTML = v;
+      else el.setAttribute(k, v === true ? "" : v);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
+    return el;
+  };
+  const storage = (kind) => ({
+    get(k) { try { return window[kind].getItem(k); } catch { return null; } },
+    set(k, v) { try { v == null ? window[kind].removeItem(k) : window[kind].setItem(k, v); } catch { /* storage blocked */ } },
+  });
+  const local = storage("localStorage"), session = storage("sessionStorage");
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmtMs = (ms) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`);
+  const fmtCost = (c) => (c == null ? null : c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(2)}`);
+  const ago = (iso) => {
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 60) return "just now";
+    if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  };
+  let toastTimer;
+  const toast = (msg) => {
+    const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+  };
+  const announce = (msg) => { $("#announce").textContent = msg; };
+  const copy = async (text) => {
+    try { await navigator.clipboard.writeText(text); toast("Copied"); }
+    catch { toast("Copying is blocked in this browser"); }
+  };
+
+  // ---- markdown (small, escape-first) ---------------------------------------------------------
+  function inline(src) {
+    const codes = [];
+    let s = esc(src).replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*\w])\*([^*\s][^*\n]*?)\*(?!\*)/g, "$1<em>$2</em>")
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    return s.replace(/\u0000(\d+)\u0000/g, (_, n) => `<code>${codes[+n]}</code>`);
+  }
+  const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+  function markdown(src) {
+    const lines = src.replace(/\r\n/g, "\n").split("\n");
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const fence = line.match(/^\s*```\s*([\w+-]*)/);
+      if (fence) {
+        const body = [];
+        i++;
+        while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) body.push(lines[i++]);
+        i++;
+        out.push(`<pre><button class="copy" type="button">Copy</button><code${fence[1] ? ` data-lang="${esc(fence[1])}"` : ""}>${esc(body.join("\n"))}</code></pre>`);
+        continue;
+      }
+      if (!line.trim()) { i++; continue; }
+      const head = line.match(/^(#{1,6})\s+(.*)$/);
+      if (head) { const n = Math.min(5, head[1].length + 2); out.push(`<h${n}>${inline(head[2])}</h${n}>`); i++; continue; }
+      if (line.includes("|") && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+        const header = cells(line); i += 2;
+        const rows = [];
+        while (i < lines.length && lines[i].includes("|") && lines[i].trim()) rows.push(cells(lines[i++]));
+        out.push(`<table><thead><tr>${header.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+        continue;
+      }
+      if (/^\s*>/.test(line)) {
+        const q = [];
+        while (i < lines.length && /^\s*>/.test(lines[i])) q.push(lines[i++].replace(/^\s*>\s?/, ""));
+        out.push(`<blockquote>${markdown(q.join("\n"))}</blockquote>`);
+        continue;
+      }
+      const li = line.match(/^\s*([-*+]|\d+[.)])\s+(.*)$/);
+      if (li) {
+        const ordered = /\d/.test(li[1]);
+        const items = [];
+        while (i < lines.length) {
+          const m = lines[i].match(/^\s*([-*+]|\d+[.)])\s+(.*)$/);
+          if (m && /\d/.test(m[1]) === ordered) { items.push(m[2]); i++; }
+          else if (lines[i].trim() && /^\s{2,}\S/.test(lines[i]) && items.length) { items[items.length - 1] += " " + lines[i].trim(); i++; }
+          else break;
+        }
+        const tag = ordered ? "ol" : "ul";
+        out.push(`<${tag}>${items.map((t) => `<li>${inline(t)}</li>`).join("")}</${tag}>`);
+        continue;
+      }
+      const para = [];
+      while (i < lines.length && lines[i].trim() && !/^\s*(```|#{1,6}\s|>|[-*+]\s|\d+[.)]\s)/.test(lines[i])) para.push(lines[i++]);
+      if (!para.length) para.push(lines[i++]);
+      out.push(`<p>${para.map(inline).join("<br>")}</p>`);
+    }
+    return out.join("");
+  }
+
+  // ---- state ------------------------------------------------------------------------------------
+  const state = {
+    key: session.get("convo.key") || local.get("convo.key"),
+    health: null,
+    models: [],
+    modelByName: new Map(),
+    aliasTo: new Map(),
+    convs: [],
+    conv: null,           // full conversation being viewed
+    draftModel: null,     // model for a conversation not created yet
+    live: new Map(),      // conv id -> {assistant index -> turn response extras}
+    busy: null,           // {controller, convId}
+    settings: {
+      stream: local.get("convo.stream") !== "false",
+      temperature: local.get("convo.temperature") || "",
+      max_tokens: local.get("convo.max_tokens") || "",
+      system: local.get("convo.system") || "",
+    },
+  };
+
+  const canonical = (name) => (name == null ? null : state.modelByName.has(name) ? name : state.aliasTo.get(name) || name);
+  const colorOf = (name) => {
+    const m = state.modelByName.get(canonical(name));
+    return m ? `var(--m${m._i % 8})` : "var(--m-x)";
+  };
+  const modelLabel = (name) => {
+    const c = canonical(name);
+    return c && c !== name ? `${name} (${c})` : name;
+  };
+  const defaultModel = () => state.models.find((m) => m.is_default)?.name || state.health?.default_model || "";
+
+  // ---- API ----------------------------------------------------------------------------------------
+  class ApiError extends Error {
+    constructor(status, code, message, detail) { super(message); this.status = status; this.code = code; this.detail = detail || {}; }
+  }
+  async function api(path, { method = "GET", body, signal, raw = false } = {}) {
+    const headers = { Accept: raw ? "text/event-stream" : "application/json" };
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (state.key) headers["X-API-Key"] = state.key;
+    let res;
+    try {
+      res = await fetch(API + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal });
+    } catch (e) {
+      if (e.name === "AbortError") throw e;
+      setServer(false);
+      throw new ApiError(0, "network", API
+        ? `The API at ${API} can't be reached. Check that it's running and that its CONVO_CORS_ORIGINS includes ${location.origin}.`
+        : "The server can't be reached. Check that it's running, then try again.");
+    }
+    if (!res.ok) {
+      let err = {};
+      try { err = (await res.json()).error || {}; } catch { /* not JSON */ }
+      if (res.status === 401) openKeyDialog(state.key ? "That key was not accepted. Check it and try again." : "");
+      throw new ApiError(res.status, err.code || "http_error", err.message || `${res.status} ${res.statusText}`, err);
+    }
+    if (raw) return res;
+    return res.status === 204 ? null : res.json();
+  }
+  async function* sse(res) {
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      let cut;
+      while ((cut = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, cut); buf = buf.slice(cut + 2);
+        let event = "message"; const data = [];
+        for (const line of chunk.split("\n")) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+        }
+        if (data.length) yield [event, JSON.parse(data.join("\n"))];
+      }
+    }
+  }
+
+  // ---- loading ------------------------------------------------------------------------------------
+  function setServer(ok) {
+    const h0 = state.health;
+    $("#serverLine").innerHTML = ok && h0
+      ? `<span class="dot"></span>Connected, ${esc(h0.store)} store`
+      : `<span class="dot off"></span>Server unreachable`;
+  }
+  async function loadHealth() {
+    try {
+      const r = await fetch(API + "/healthz");
+      state.health = await r.json();
+      $("#ver").textContent = `v${state.health.version}`;
+      setServer(true);
+    } catch { setServer(false); }
+  }
+  async function loadModels() {
+    const models = await api("/v1/models");
+    state.models = models.map((m, i) => ({ ...m, _i: i }));
+    state.modelByName = new Map(state.models.map((m) => [m.name, m]));
+    state.aliasTo = new Map(state.models.flatMap((m) => m.aliases.map((a) => [a, m.name])));
+    renderModelSelects();
+    renderServerInfo();
+  }
+  async function loadConvs() {
+    state.convs = await api("/v1/conversations?limit=200");
+    renderConvList();
+  }
+  async function openConv(id, { quiet = false } = {}) {
+    try {
+      state.conv = await api(`/v1/conversations/${encodeURIComponent(id)}`);
+      if (location.hash.slice(1) !== id) history.replaceState(null, "", `#${id}`);
+      local.set("convo.last", id);
+    } catch (e) {
+      if (e.status === 404) { if (!quiet) toast("That conversation no longer exists"); newConversation(); return; }
+      throw e;
+    }
+    closeSidebar();
+    render();
+    scrollToEnd(false);
+  }
+  function newConversation() {
+    if (state.busy) return;
+    state.conv = null;
+    state.draftModel = state.draftModel || defaultModel();
+    history.replaceState(null, "", location.pathname + location.search);
+    local.set("convo.last", null);
+    closeSidebar();
+    render();
+    $("#input").focus();
+  }
+
+  // ---- rendering ------------------------------------------------------------------------------------
+  function render() {
+    renderConvList();
+    renderModelSelects();
+    renderHeader();
+    renderView();
+    renderSettings();
+    updateSend();
+  }
+  function renderHeader() {
+    const c = state.conv;
+    const firstUser = c?.messages.find((m) => m.role === "user")?.content;
+    $("#title").textContent = c ? (firstUser ? firstUser.slice(0, 90) : "Untitled conversation") : "New conversation";
+    document.title = c && firstUser ? `${firstUser.slice(0, 40)} | Conversation API` : "Conversation API";
+    $("#deleteBtn").hidden = !c;
+    disarmDelete();
+  }
+  function modelOptions(select, current, { includeConv = false } = {}) {
+    select.replaceChildren();
+    if (includeConv) select.append(h("option", { value: "" }, "Conversation model"));
+    const ready = state.models.filter((m) => m.available), notReady = state.models.filter((m) => !m.available);
+    const opt = (m) => h("option", { value: m.name, selected: m.name === current }, m.name + (m.aliases.length ? ` (${m.aliases.join(", ")})` : ""));
+    if (ready.length) select.append(h("optgroup", { label: "Ready" }, ready.map(opt)));
+    if (notReady.length) select.append(h("optgroup", { label: "Not configured on this server" }, notReady.map(opt)));
+    if (current && !state.modelByName.has(current)) {
+      select.prepend(h("option", { value: current, selected: true }, modelLabel(current)));
+    }
+    if (current != null) select.value = current;
+  }
+  function renderModelSelects() {
+    const current = state.conv ? state.conv.model : (state.draftModel || defaultModel());
+    const sel = $("#modelSelect");
+    modelOptions(sel, current);
+    sel.disabled = !!state.busy || !state.models.length;
+    $("#modelSwatch").style.setProperty("--m", colorOf(current));
+    const ov = $("#overrideSelect"), keep = ov.value;
+    modelOptions(ov, "", { includeConv: true });
+    ov.value = state.modelByName.has(keep) ? keep : "";
+    ov.disabled = !!state.busy || !state.models.length;
+  }
+  function renderConvList() {
+    const ul = $("#convs");
+    ul.replaceChildren();
+    if (!state.convs.length) { ul.append(h("li", { class: "empty" }, "No conversations yet.")); return; }
+    for (const c of state.convs) {
+      ul.append(h("li", {},
+        h("button", {
+          class: "conv-link", type: "button", "aria-current": state.conv?.id === c.id ? "true" : null,
+          style: `--m:${colorOf(c.model)}`, onclick: () => !state.busy && openConv(c.id),
+        },
+        h("span", { class: "tick", "aria-hidden": "true" }),
+        h("span", { class: "title" }, c.preview || "Untitled conversation"),
+        h("span", { class: "sub" }, h("span", {}, c.model), h("span", {}, `${c.turns} ${c.turns === 1 ? "turn" : "turns"}`), h("span", {}, ago(c.updated_at)))),
+      ));
+    }
+  }
+
+  function timeline(conv) {
+    const items = [];
+    const swaps = [...(conv.model_history || [])];
+    let userTurns = 0;
+    let active = swaps.length ? swaps[0].from : conv.model;  // the conversation's model at each point
+    const flush = (beforeIso) => {
+      while (swaps.length) {
+        const s = swaps[0];
+        const due = s.after_turn != null ? s.after_turn <= userTurns : beforeIso == null || s.at <= beforeIso;
+        if (!due) break;
+        const sw = swaps.shift();
+        active = sw.to;
+        items.push({ kind: "swap", ...sw });
+      }
+    };
+    conv.messages.forEach((m, idx) => {
+      if (m.role === "user") { flush(m.created_at); userTurns++; }
+      items.push({ kind: m.role, m, idx, active });
+    });
+    flush(null);
+    return items;
+  }
+  function userRow(text, { failed = false } = {}) {
+    return h("article", { class: `turn user${failed ? " failed" : ""}` },
+      h("div", { class: "rail", "aria-hidden": "true" }, h("span", { class: "seg" })),
+      h("div", { class: "body" }, h("div", { class: "bubble" }, text)));
+  }
+  function swapRow(s) {
+    return h("article", { class: "turn swap", style: `--from:${colorOf(s.from)};--to:${colorOf(s.to)}` },
+      h("div", { class: "rail", "aria-hidden": "true" }, h("span", { class: "seg" })),
+      h("div", { class: "body", html: `Switched from ${esc(s.from)} to <b>${esc(s.to)}</b>. Later replies use ${esc(s.to)} and see the whole history.` }));
+  }
+  function attemptsList(attempts) {
+    return h("ul", {}, attempts.map((a) => h("li", {}, h("strong", {}, a.model), ` (${a.kind}): ${a.error}`)));
+  }
+  function assistantRow(m, extra, active) {
+    const name = m.model?.name || "assistant";
+    const row = h("article", { class: "turn assistant", style: `--m:${colorOf(name)}` });
+    const who = h("header", { class: "who" },
+      h("span", { class: "name" }, name),
+      m.model?.model_id && m.model.model_id !== name ? h("code", { class: "mid" }, m.model.model_id) : null);
+    if (extra?.override) who.append(h("span", { class: "tag" }, "This reply only"));
+    else if (!extra && m.model && active && canonical(active) !== m.model.name && active !== m.model.model_id) {
+      // after a reload the turn details are gone, but the swap history still says which model was in charge
+      who.append(h("span", { class: "tag", title: `The conversation model was ${active} at this point` }, "One-off model or fallback"));
+    }
+    const meta = h("footer", { class: "meta" });
+    const u = m.usage;
+    if (u) meta.append(h("span", {}, `${u.input_tokens.toLocaleString()} in, ${u.output_tokens.toLocaleString()} out tokens`));
+    if (extra?.latency_ms != null) meta.append(h("span", {}, fmtMs(extra.latency_ms)));
+    if (u && fmtCost(u.cost_usd)) meta.append(h("span", {}, fmtCost(u.cost_usd)));
+    if (extra?.history_trimmed) meta.append(h("span", {}, `${extra.history_trimmed} oldest messages left out to fit the context`));
+    meta.append(h("button", { type: "button", onclick: () => copy(m.content) }, "Copy"));
+    const body = h("div", { class: "body" }, who, h("div", { class: "md", html: markdown(m.content) }), meta);
+    if (extra?.fell_back) {
+      body.append(h("div", { class: "note" },
+        `${extra.model_requested} couldn't answer, so ${name} did.`,
+        extra.attempts?.length ? h("details", {}, h("summary", {}, "What failed"), attemptsList(extra.attempts)) : null));
+    }
+    row.append(h("div", { class: "rail", "aria-hidden": "true" }, h("span", { class: "seg" })), body);
+    return row;
+  }
+  function welcome() {
+    const current = state.conv ? canonical(state.conv.model) : canonical(state.draftModel || defaultModel());
+    const box = h("section", { class: "welcome" },
+      h("h3", {}, "Start a conversation"),
+      h("p", {}, "Pick a model and send a message. You can switch models at any point: the next model gets the whole history, and every reply shows which model wrote it."));
+    if (state.models.length) {
+      box.append(h("div", { class: "catalog", role: "group", "aria-label": "Models on this server" },
+        state.models.map((m) => h("button", {
+          type: "button", style: `--m:${colorOf(m.name)}`, disabled: !m.available, "aria-pressed": m.name === current ? "true" : "false",
+          onclick: () => { swapModel(m.name); $("#input").focus(); },
+        },
+        h("span", { class: "swatch", "aria-hidden": "true" }),
+        h("span", { class: "cat-name" }, m.name, m.is_default ? h("small", {}, "default") : null, m.aliases.length ? h("small", {}, m.aliases.join(", ")) : null),
+        h("span", { class: "cat-status" + (m.available ? " ready" : "") }, m.available ? "Ready" : m.status),
+        h("span", { class: "cat-desc" }, m.description || `${m.provider}: ${m.model_id}`)))));
+      if (state.modelByName.has("mock")) box.append(h("p", { class: "hint" }, "Testing fallback? With the mock model, put #fail in a message to simulate an overloaded model."));
+    }
+    return box;
+  }
+  function renderView() {
+    const view = $("#view");
+    const c = state.conv;
+    if (!c || !c.messages.length) { view.replaceChildren(welcome()); return; }
+    const extras = state.live.get(c.id) || new Map();
+    const t = h("div", { class: "transcript", id: "transcript" });
+    for (const item of timeline(c)) {
+      if (item.kind === "swap") t.append(swapRow(item));
+      else if (item.kind === "user") t.append(userRow(item.m.content));
+      else t.append(assistantRow(item.m, extras.get(item.idx), item.active));
+    }
+    view.replaceChildren(t);
+  }
+  function transcriptEl() {
+    let t = $("#transcript");
+    if (!t) { t = h("div", { class: "transcript", id: "transcript" }); $("#view").replaceChildren(t); }
+    return t;
+  }
+  function scrollToEnd(smooth = true) {
+    const s = $("#scroller");
+    requestAnimationFrame(() => s.scrollTo({ top: s.scrollHeight, behavior: smooth ? "smooth" : "instant" }));
+  }
+  const nearBottom = () => { const s = $("#scroller"); return s.scrollHeight - s.scrollTop - s.clientHeight < 120; };
+
+  // ---- sending a turn -----------------------------------------------------------------------------
+  function updateSend() {
+    const btn = $("#sendBtn");
+    if (state.busy) { btn.textContent = "Stop"; btn.classList.add("stop"); btn.disabled = false; btn.setAttribute("aria-label", "Stop the reply"); return; }
+    btn.textContent = "Send"; btn.classList.remove("stop"); btn.removeAttribute("aria-label");
+    btn.disabled = !$("#input").value.trim() || !state.models.length;
+  }
+  function autosize() { const t = $("#input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, window.innerHeight * 0.4)}px`; }
+
+  function replyOptions() {
+    const o = {};
+    const temp = parseFloat(state.settings.temperature), max = parseInt(state.settings.max_tokens, 10);
+    if (!Number.isNaN(temp)) o.temperature = temp;
+    if (!Number.isNaN(max)) o.max_tokens = max;
+    return o;
+  }
+
+  async function send(content) {
+    if (state.busy || !content.trim()) return;
+    const override = $("#overrideSelect").value || null;
+    const controller = new AbortController();
+    state.busy = { controller };
+    $("#overrideSelect").value = "";  // an override is for one reply only
+    $("#input").value = ""; autosize(); renderModelSelects(); updateSend();
+
+    let conv = state.conv;
+    try {
+      if (!conv) {
+        conv = await api("/v1/conversations", {
+          method: "POST",
+          body: { model: state.draftModel || defaultModel() || undefined, system: state.settings.system || undefined, metadata: { source: "web-ui" } },
+        });
+        state.conv = conv;
+        history.replaceState(null, "", `#${conv.id}`);
+        local.set("convo.last", conv.id);
+        renderHeader();
+      }
+    } catch (e) {
+      state.busy = null; $("#input").value = content; autosize(); renderModelSelects(); updateSend();
+      if (e.code !== "unauthorized") toast(e.message);
+      return;
+    }
+    state.busy.convId = conv.id;
+
+    if (!conv.messages.length && !conv.model_history?.length) $("#view").replaceChildren();
+    const t = transcriptEl();
+    const uRow = userRow(content);
+    $("#title").textContent = conv.messages.find((m) => m.role === "user")?.content.slice(0, 90) || content.slice(0, 90);
+    const planned = override || conv.model;
+    const aRow = h("article", { class: "turn assistant", style: `--m:${colorOf(planned)}` });
+    const nameEl = h("span", { class: "name" }, canonical(planned));
+    const mdEl = h("div", { class: "md caret" });
+    const notes = h("div", {});
+    const who = h("header", { class: "who" }, nameEl, override && override !== conv.model ? h("span", { class: "tag" }, "This reply only") : null);
+    aRow.append(h("div", { class: "rail", "aria-hidden": "true" }, h("span", { class: "seg" })), h("div", { class: "body" }, who, mdEl, notes));
+    t.append(uRow, aRow);
+    scrollToEnd();
+
+    const body = { content, stream: state.settings.stream, ...replyOptions() };
+    if (override && override !== conv.model) body.model = override;
+
+    let text = "", frame = 0;
+    const paint = () => { frame = 0; const stick = nearBottom(); mdEl.innerHTML = markdown(text); if (stick) $("#scroller").scrollTop = $("#scroller").scrollHeight; };
+    const fail = (title, message, attempts, { partial = false } = {}) => {
+      mdEl.classList.remove("caret");
+      if (!text) { mdEl.remove(); aRow.style.setProperty("--m", "var(--m-x)"); nameEl.textContent = "No reply"; who.querySelector(".tag")?.remove(); }
+      uRow.classList.add("failed");
+      notes.replaceChildren(); // the attempts list below already covers each fallback step
+      notes.append(h("div", { class: "note err", role: "alert" },
+        h("strong", {}, title), " ", message,
+        partial ? h("div", {}, "The partial reply above was not saved.") : null,
+        attempts?.length ? h("details", {}, h("summary", {}, `${attempts.length} ${attempts.length === 1 ? "attempt" : "attempts"} failed`), attemptsList(attempts)) : null,
+        h("div", { class: "actions" },
+          h("button", { class: "btn", type: "button", onclick: () => { uRow.remove(); aRow.remove(); send(content); } }, "Try again"),
+          h("button", { class: "btn", type: "button", onclick: () => { uRow.remove(); aRow.remove(); $("#input").value = content; autosize(); updateSend(); $("#input").focus(); } }, "Edit message"))));
+      announce(`${title} ${message}`);
+    };
+
+    let turn = null;
+    try {
+      if (body.stream) {
+        mdEl.replaceChildren();
+        const res = await api(`/v1/conversations/${conv.id}/messages`, { method: "POST", body, signal: controller.signal, raw: true });
+        for await (const [event, data] of sse(res)) {
+          if (event === "start") {
+            aRow.style.setProperty("--m", colorOf(data.model)); nameEl.textContent = data.model;
+          } else if (event === "delta") {
+            text += data.text;
+            if (!frame) frame = requestAnimationFrame(paint);
+          } else if (event === "fallback") {
+            const to = state.modelByName.has(data.to) ? data.to : null;
+            notes.append(h("div", { class: "note" }, `${data.from} failed (${data.error}). Trying ${data.to}.`));
+            if (to) { aRow.style.setProperty("--m", colorOf(to)); nameEl.textContent = to; }
+          } else if (event === "error") {
+            fail("Couldn't get a reply.", data.error, data.attempts, { partial: data.partial });
+          } else if (event === "done") {
+            turn = data;
+          }
+        }
+      } else {
+        mdEl.replaceChildren(h("span", { class: "thinking" }, "Writing a reply…"));
+        turn = await api(`/v1/conversations/${conv.id}/messages`, { method: "POST", body, signal: controller.signal });
+      }
+    } catch (e) {
+      if (e.name === "AbortError") {
+        mdEl.classList.remove("caret");
+        if (frame) cancelAnimationFrame(frame);
+        mdEl.innerHTML = markdown(text);
+        notes.append(h("div", { class: "note" }, "Stopped. This turn was not saved, so the model won't see it next time."));
+        uRow.classList.add("failed");
+      } else if (e.code === "unauthorized") {
+        uRow.remove(); aRow.remove(); $("#input").value = content; autosize();
+      } else {
+        const titles = { all_models_failed: "Every model in the fallback chain failed.", invalid_request: "The model rejected this request.", unknown_model: "That model isn't in the catalog.", message_too_long: "That message is too long." };
+        fail(titles[e.code] || "Couldn't get a reply.", e.message, e.detail.attempts);
+      }
+    } finally {
+      if (frame) { cancelAnimationFrame(frame); frame = 0; }
+      state.busy = null;
+    }
+
+    if (turn) {
+      const now = new Date().toISOString();
+      const c = state.conv && state.conv.id === conv.id ? state.conv : conv;
+      c.messages.push({ role: "user", content, created_at: now }, turn.message);
+      c.updated_at = now;
+      if (!state.live.has(c.id)) state.live.set(c.id, new Map());
+      state.live.get(c.id).set(c.messages.length - 1, { ...turn, override: !!body.model });
+      announce(`Reply from ${turn.model_used.name} finished.`);
+      if (state.conv?.id === conv.id) { const stick = nearBottom(); renderView(); if (stick) scrollToEnd(false); }
+    }
+    renderModelSelects(); updateSend();
+    loadConvs().catch(() => {});
+    if (!turn && state.conv?.id === conv.id) {
+      // keep the failed turn on screen; re-sync quietly so the next send uses the stored history
+      api(`/v1/conversations/${conv.id}`).then((fresh) => { if (state.conv?.id === conv.id) state.conv = fresh; }).catch(() => {});
+    }
+    if (window.matchMedia("(pointer: fine)").matches) $("#input").focus();
+  }
+
+  // ---- model swap (sticky) --------------------------------------------------------------------------
+  async function swapModel(name) {
+    if (!state.conv) { state.draftModel = name; render(); return; }
+    if (name === state.conv.model) return;
+    const prev = state.conv.model;
+    try {
+      state.conv = await api(`/v1/conversations/${state.conv.id}`, { method: "PATCH", body: { model: name } });
+      render();
+      if (state.conv.messages.length) scrollToEnd();
+      toast(`Later replies use ${name}`);
+      loadConvs().catch(() => {});
+    } catch (e) {
+      $("#modelSelect").value = prev;
+      if (e.code !== "unauthorized") toast(e.message);
+    }
+  }
+
+  // ---- delete ----------------------------------------------------------------------------------------
+  let armTimer;
+  function disarmDelete() {
+    const b = $("#deleteBtn"); clearTimeout(armTimer);
+    b.classList.remove("armed"); b.setAttribute("aria-label", "Delete conversation");
+    b.innerHTML = '<svg width="17" height="17" viewBox="0 0 17 17" aria-hidden="true"><path d="M3 5h11M7 5V3h3v2M5 5l.7 9h5.6l.7-9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg>';
+  }
+  async function onDelete() {
+    const b = $("#deleteBtn");
+    if (!state.conv || state.busy) return;
+    if (!b.classList.contains("armed")) {
+      b.classList.add("armed"); b.textContent = "Delete?"; b.setAttribute("aria-label", "Confirm: delete this conversation");
+      armTimer = setTimeout(disarmDelete, 4000);
+      return;
+    }
+    const id = state.conv.id;
+    try {
+      await api(`/v1/conversations/${id}`, { method: "DELETE" });
+      state.live.delete(id);
+      toast("Conversation deleted");
+      newConversation();
+      loadConvs().catch(() => {});
+    } catch (e) { toast(e.message); disarmDelete(); }
+  }
+
+  // ---- settings drawer ---------------------------------------------------------------------------------
+  function renderSettings() {
+    const c = state.conv;
+    $("#systemHelp").textContent = c ? "Applies to this conversation from the next reply on." : "Used when the next conversation starts.";
+    if (document.activeElement !== $("#systemInput")) $("#systemInput").value = c ? (c.system || "") : state.settings.system;
+    $("#tempInput").value = state.settings.temperature;
+    $("#maxInput").value = state.settings.max_tokens;
+    $("#streamInput").checked = state.settings.stream;
+    const where = session.get("convo.key") ? "for this browser tab" : local.get("convo.key") ? "on this device" : null;
+    $("#keyHelp").textContent = state.key ? `A key is saved ${where || "for this page"}. It is sent as X-API-Key.` : "No key saved. Only needed when the server sets CONVO_API_KEY.";
+    $("#changeKey").textContent = state.key ? "Change API key" : "Enter API key";
+    $("#forgetKey").hidden = !state.key;
+  }
+  function renderServerInfo() {
+    const hh = state.health || {};
+    const ready = state.models.filter((m) => m.available).length;
+    $("#serverInfo").replaceChildren(
+      h("dt", {}, "API address"), h("dd", {}, API || location.origin),
+      h("dt", {}, "Version"), h("dd", {}, hh.version || "unknown"),
+      h("dt", {}, "Default model"), h("dd", {}, defaultModel() || "unknown"),
+      h("dt", {}, "Models ready"), h("dd", {}, `${ready} of ${state.models.length}`),
+      h("dt", {}, "Store"), h("dd", {}, hh.store || "unknown"));
+  }
+  let lastFocus = null;
+  function openDrawer() {
+    lastFocus = document.activeElement;
+    renderSettings(); renderServerInfo();
+    const d = $("#drawer"); d.classList.add("open"); d.removeAttribute("inert"); d.setAttribute("aria-hidden", "false");
+    $("#scrim").classList.add("show"); $("#settingsBtn").setAttribute("aria-expanded", "true");
+    $("#systemInput").focus();
+  }
+  function closeDrawer() {
+    const d = $("#drawer"); if (!d.classList.contains("open")) return;
+    d.classList.remove("open"); d.setAttribute("inert", ""); d.setAttribute("aria-hidden", "true");
+    $("#scrim").classList.remove("show"); $("#settingsBtn").setAttribute("aria-expanded", "false");
+    lastFocus?.focus?.();
+  }
+  function openSidebar() { $("#sidebar").classList.add("open"); $("#scrim").classList.add("show"); $("#menuBtn").setAttribute("aria-expanded", "true"); }
+  function closeSidebar() {
+    if (!$("#sidebar").classList.contains("open")) return;
+    $("#sidebar").classList.remove("open"); $("#menuBtn").setAttribute("aria-expanded", "false");
+    if (!$("#drawer").classList.contains("open")) $("#scrim").classList.remove("show");
+  }
+  async function saveSystem() {
+    const value = $("#systemInput").value;
+    if (state.conv) {
+      try {
+        state.conv = await api(`/v1/conversations/${state.conv.id}`, { method: "PATCH", body: { system: value } });
+      } catch (e) { toast(e.message); return; }
+    } else {
+      state.settings.system = value; local.set("convo.system", value || null);
+    }
+    $("#systemSaved").textContent = "Saved";
+    setTimeout(() => { $("#systemSaved").textContent = ""; }, 1800);
+  }
+  async function reloadCatalog() {
+    $("#reloadMsg").textContent = "";
+    try {
+      const r = await api("/v1/admin/reload-models", { method: "POST" });
+      await loadModels(); render();
+      $("#reloadMsg").textContent = r.changes.length ? `${r.changes.length} ${r.changes.length === 1 ? "change" : "changes"} picked up` : "No changes";
+    } catch (e) { $("#reloadMsg").textContent = ""; toast(e.message); }
+  }
+
+  // ---- API key dialog ------------------------------------------------------------------------------------
+  let keyWaiters = [];
+  function openKeyDialog(err = "") {
+    const d = $("#keyDialog");
+    $("#keyErr").textContent = err;
+    if (!d.open) { $("#keyInput").value = ""; $("#keyRemember").checked = !!local.get("convo.key"); d.showModal(); }
+    $("#keyInput").focus();
+    return new Promise((resolve) => keyWaiters.push(resolve));
+  }
+  async function submitKey(e) {
+    e.preventDefault();
+    const key = $("#keyInput").value.trim();
+    if (!key) return;
+    const res = await fetch(API + "/v1/models", { headers: { "X-API-Key": key } }).catch(() => null);
+    if (!res) { $("#keyErr").textContent = "The server can't be reached."; return; }
+    if (res.status === 401) { $("#keyErr").textContent = "That key was not accepted. Check it and try again."; return; }
+    state.key = key;
+    session.set("convo.key", null); local.set("convo.key", null);
+    ($("#keyRemember").checked ? local : session).set("convo.key", key);
+    $("#keyDialog").close();
+    keyWaiters.splice(0).forEach((r) => r(true));
+    toast("Connected");
+    await boot();
+  }
+
+  // ---- theme ----------------------------------------------------------------------------------------
+  function applyTheme(t) {
+    if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+    const dark = t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    $("#themeBtn").textContent = dark ? "Light theme" : "Dark theme";
+  }
+
+  // ---- wiring ----------------------------------------------------------------------------------------
+  $("#composer").addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (state.busy) { state.busy.controller.abort(); return; }
+    send($("#input").value);
+  });
+  $("#input").addEventListener("input", () => { autosize(); updateSend(); });
+  $("#input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!state.busy) send($("#input").value); }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (state.busy) state.busy.controller.abort();
+      closeDrawer(); closeSidebar();
+    }
+  });
+  $("#modelSelect").addEventListener("change", (e) => swapModel(e.target.value));
+  $("#newBtn").addEventListener("click", newConversation);
+  $("#deleteBtn").addEventListener("click", onDelete);
+  $("#settingsBtn").addEventListener("click", openDrawer);
+  $("#closeDrawer").addEventListener("click", closeDrawer);
+  $("#menuBtn").addEventListener("click", openSidebar);
+  $("#scrim").addEventListener("click", () => { closeDrawer(); closeSidebar(); });
+  $("#saveSystem").addEventListener("click", saveSystem);
+  $("#reloadBtn").addEventListener("click", reloadCatalog);
+  $("#tempInput").addEventListener("change", (e) => { state.settings.temperature = e.target.value; local.set("convo.temperature", e.target.value || null); });
+  $("#maxInput").addEventListener("change", (e) => { state.settings.max_tokens = e.target.value; local.set("convo.max_tokens", e.target.value || null); });
+  $("#streamInput").addEventListener("change", (e) => { state.settings.stream = e.target.checked; local.set("convo.stream", String(e.target.checked)); });
+  $("#changeKey").addEventListener("click", () => { closeDrawer(); openKeyDialog(); });
+  $("#forgetKey").addEventListener("click", () => { state.key = null; session.set("convo.key", null); local.set("convo.key", null); renderSettings(); toast("Key forgotten"); });
+  $("#keyForm").addEventListener("submit", submitKey);
+  $("#keyCancel").addEventListener("click", () => $("#keyDialog").close());
+  $("#themeBtn").addEventListener("click", () => {
+    const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    const next = dark ? "light" : "dark"; local.set("convo.theme", next); applyTheme(next);
+  });
+  $("#view").addEventListener("click", (e) => {
+    const b = e.target.closest("pre .copy");
+    if (b) copy(b.parentElement.querySelector("code").textContent);
+  });
+  window.addEventListener("hashchange", () => {
+    const id = location.hash.slice(1);
+    if (id && id !== state.conv?.id && !state.busy) openConv(id);
+  });
+  setInterval(() => { if (!state.busy) renderConvList(); }, 60000);
+
+  async function boot() {
+    try {
+      await loadModels();
+      await loadConvs();
+      const id = location.hash.slice(1) || local.get("convo.last");
+      if (id) await openConv(id, { quiet: !location.hash });
+      else newConversation();
+    } catch (e) {
+      if (e.code === "unauthorized") { renderView(); return; }
+      $("#view").replaceChildren(h("section", { class: "welcome" }, h("h3", {}, "Can't load the model catalog"), h("p", {}, e.message)));
+    }
+  }
+
+  applyTheme(local.get("convo.theme"));
+  $("#docsLink").href = API + "/docs";
+  if (STATIC && !API) {
+    setServer(false);
+    $("#serverLine").innerHTML = '<span class="dot off"></span>No API address set';
+    $("#view").replaceChildren(h("section", { class: "welcome" },
+      h("h3", {}, "This page isn't connected to an API yet"),
+      h("p", {}, "It was built without an API address. Set CONVO_API_URL to the API's HTTPS URL in the hosting settings (on AWS Amplify: Hosting, Environment variables), then redeploy."),
+      h("p", { class: "hint" }, "deploy/aws_ecs_express.sh sets this for you when you pass AMPLIFY_APP_ID.")));
+    $("#input").disabled = true;
+    return;
+  }
+  loadHealth().then(boot);
+})();
+</script>
+</body>
+</html>

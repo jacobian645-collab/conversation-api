@@ -1,0 +1,14 @@
+# AWS Amplify Hosting build for the chat UI (static). The API runs separately (deploy/aws_ecs_express.sh).
+# Set CONVO_API_URL in Amplify (Hosting > Environment variables) to the API's https:// URL; the deploy
+# script does this when you pass AMPLIFY_APP_ID. Security headers are in customHttp.yml.
+version: 1
+frontend:
+  phases:
+    build:
+      commands:
+        - python3 --version
+        - python3 scripts/build_ui.py --out dist/web
+  artifacts:
+    baseDirectory: dist/web
+    files:
+      - '**/*'

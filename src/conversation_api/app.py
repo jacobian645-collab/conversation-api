@@ -12,13 +12,21 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from pydantic import ValidationError
 
-from . import __version__
+from . import __version__, ui
 from .config import Settings, get_settings
 from .registry import CatalogError, ModelRegistry, UnknownModelError
 from .schemas import (
@@ -62,6 +70,15 @@ def configure_logging(level: str) -> None:
     root.handlers[:] = [handler]
     root.setLevel(level.upper())
     root.propagate = False
+
+
+# ---- browser UI ----------------------------------------------------------------------------------
+@lru_cache(maxsize=1)
+def ui_page() -> tuple[str, dict[str, str]]:
+    """The chat page and its security headers. The CSP pins the page's one inline script by hash, so the
+    page can only run its own code and only talk to this server."""
+    html = ui.load_page()
+    return html, ui.security_headers(html)
 
 
 # ---- app factory ---------------------------------------------------------------------------------
@@ -166,6 +183,7 @@ def create_app(
                 "models": len(svc.registry.models),
                 "parameters": sorted(set(svc.registry.sources.values())),
                 "catalog_refresh_s": settings.catalog_refresh_s,
+                "cors_origins": settings.cors_origin_list,
             },
         )
         if not settings.api_key and settings.host not in ("127.0.0.1", "localhost"):
@@ -234,6 +252,19 @@ def create_app(
             )
         return response
 
+    if settings.cors_origin_list:
+        # For the chat page on another origin (AWS Amplify Hosting). The key travels in a header, not a
+        # cookie, so credentials stay off and no origin can ride on a browser session.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origin_list,
+            allow_methods=["GET", "POST", "PATCH", "DELETE"],
+            allow_headers=["Content-Type", "X-API-Key", "Authorization", "X-Request-ID"],
+            expose_headers=["X-Request-ID"],
+            allow_credentials=False,
+            max_age=600,
+        )
+
     def error(status: int, code: str, message: str, **extra: Any) -> JSONResponse:
         return JSONResponse({"error": {"code": code, "message": message, **extra}}, status_code=status)
 
@@ -292,6 +323,18 @@ def create_app(
             "default_model": s.registry.default,
             "store": s.store.kind,
         }
+
+    if settings.ui:
+
+        @app.get("/", include_in_schema=False)
+        async def root() -> RedirectResponse:
+            return RedirectResponse("/ui", status_code=307)
+
+        @app.api_route("/ui", methods=["GET", "HEAD"], include_in_schema=False)
+        async def ui_route() -> HTMLResponse:
+            """The chat page itself holds no data, so it needs no key; it asks for one when /v1 answers 401."""
+            html, headers = ui_page()
+            return HTMLResponse(html, headers=headers)
 
     v1 = [Depends(require_key)]
 
@@ -419,6 +462,10 @@ def run(host: str | None = None, port: int | None = None, reload: bool = False) 
     import uvicorn
 
     settings = get_settings()
+    if settings.ui:
+        shown = host or settings.host
+        shown = "127.0.0.1" if shown in ("0.0.0.0", "::") else shown
+        print(f"Chat UI: http://{shown}:{port or settings.port}/ui", flush=True)
     uvicorn.run(
         "conversation_api.app:create_app",
         factory=True,

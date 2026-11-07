@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = Field(default_factory=lambda: int(os.environ.get("PORT", "8080")))  # Cloud Run / ACA set PORT
     log_level: str = "info"
+    # Browser chat UI at /ui (a static page that calls the same /v1 API). Set CONVO_UI=false to turn it off.
+    ui: bool = True
+    # Origins allowed to call the API from a browser (CORS), comma-separated, e.g. the AWS Amplify URL of
+    # the chat page: https://main.d1abc2def3.amplifyapp.com. Empty = same-origin only.
+    cors_origins: str = ""
 
     # Auth: when set, every /v1 call needs `X-API-Key: <key>` (or `Authorization: Bearer <key>`).
     api_key: str | None = None
@@ -47,6 +52,10 @@ class Settings(BaseSettings):
     # Guardrails
     max_message_chars: int = 32_000
     max_system_chars: int = 16_000
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip().rstrip("/") for o in self.cors_origins.split(",") if o.strip()]
 
 
 @lru_cache

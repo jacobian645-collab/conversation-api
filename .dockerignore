@@ -12,3 +12,6 @@ docs
 deploy
 .convo-server.*
 .DS_Store
+dist
+amplify.yml
+customHttp.yml
